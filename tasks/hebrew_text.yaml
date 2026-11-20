@@ -4,8 +4,8 @@
 - id: he_incident_summary
   category: hebrew_text
   prompt: |
-    כתוב סיכום מנהלים בעברית (עד 120 מילים) לאירוע הבא, עבור הנהלה לא-טכנית:
-    מה קרה, מה ההשפעה, מה ה-root cause, ומה עושים כדי שזה לא יחזור.
+    Write an executive summary IN HEBREW (up to 120 words) of the following incident, for non-technical management:
+    what happened, the impact, the root cause, and what we're doing so it doesn't happen again.
 
     INCIDENT LOG
     14:02 UTC  deploy of payments-api v2.41. Config change reduced DB connection pool from 50 to 5 (typo).
@@ -38,10 +38,10 @@
 - id: he_pushback_email
   category: hebrew_text
   prompt: |
-    כתוב מייל בעברית למנהלת המוצר, דנה. היא ביקשה פיצ'ר "ייצוא דוחות מתוזמן" בתוך שבועיים,
-    והצוות מעריך שהפיצ'ר המלא ייקח 5 שבועות (מתזמן, 3 פורמטים, הרשאות, retry לשליחה).
-    המטרה: לא להגיד סתם "לא". להציע חלופה שמשרתת את הצורך העסקי שלה, ולשמור על יחסים טובים.
-    עד 200 מילים.
+    Write an email IN HEBREW to Dana, the product manager. She asked for a "scheduled report export" feature within two weeks;
+    the team estimates the full feature at 5 weeks (scheduler, 3 formats, permissions, delivery retries).
+    The goal: don't just say "no" - propose an alternative that serves her business need, and keep the relationship good.
+    Up to 200 words.
   reference: |
     נושא: ייצוא דוחות מתוזמן – הצעה לשבועיים הקרובים
 
@@ -53,7 +53,7 @@
     אשמח לעשות 15 דקות השבוע כדי לוודא שאני מבין נכון מה הכי קריטי לך. אולי יש פשרה אחרת שמתאימה יותר.
 
     תודה,
-    עידו
+    [שם]
   graders:
     - type: rubric
       weight: 3

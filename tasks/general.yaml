@@ -17,13 +17,13 @@
 - id: gen_consult_first_two_weeks
   category: general
   prompt: |
-    אני מהנדס mid-senior. ראש הצוות ביקש ממני לקחת ownership על הוצאת ה-auth מהמונוליט לסרוויס נפרד.
-    אין לי עדיין תמונה מלאה של כמה קוד תלוי ב-auth. איך כדאי לי לגשת לשבועיים הראשונים?
+    I'm a mid-senior engineer. My team lead asked me to own extracting auth from our monolith into a separate service.
+    I don't yet have a full picture of how much code depends on auth. How should I approach the first two weeks?
   reference: |
-    שבוע 1, למפות לפני שכותבים קוד: לרשום כל נקודה במונוליט שקוראת ל-auth (session, הרשאות, טוקנים) ולמדוד traffic. לזהות מי ה-stakeholders: צוותים צורכים, security, SRE. להגדיר עם ראש הצוות מה נחשב "הצלחה" ומה לא בסקופ.
-    לנסח design doc קצר: גבולות הסרוויס, חוזה API, מה קורה כשהסרוויס למטה (latency, fail-open או fail-closed), ואסטרטגיית migration בשיטת strangler: facade בתוך המונוליט, dual-run או shadow traffic, ו-feature flag שמאפשר rollback מיידי.
-    שבוע 2: review לדוק עם security ועם הצוותים הצורכים, ו-spike קטן שמוציא מסלול אחד בעל סיכון נמוך (למשל אימות טוקן לקריאה בלבד) מאחורי flag, עם מדדים.
-    לתקשר סיכונים והערכת זמנים מוקדם. ownership פירושו גם להגיד מה לא יודעים עדיין.
+    Week 1 - map before writing code: list every place in the monolith that touches auth (sessions, permissions, tokens) and measure traffic. Identify stakeholders: consuming teams, security, SRE. Agree with the team lead on what "success" means and what is out of scope.
+    Draft a short design doc: service boundaries, API contract, behaviour when the service is down (latency, fail-open vs fail-closed), and a strangler migration strategy: a facade inside the monolith, dual-run or shadow traffic, and a feature flag for instant rollback.
+    Week 2 - review the doc with security and consuming teams, and run a small spike that moves one low-risk path (e.g. read-only token validation) behind a flag, with metrics.
+    Communicate risks and estimates early. Ownership also means saying what you don't know yet.
   grader:
     type: rubric
     criteria:

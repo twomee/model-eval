@@ -1,98 +1,98 @@
-# evalkit: eval אישי להשוואת מודלים
+# evalkit — a personal eval for comparing LLMs
 
-כלי CLI שמריץ **את המשימות שלך** על כמה מודלים מכמה חברות, מציין את התשובות ומפיק דוח שעוזר להחליט.
-הוא עובד גם בלי מפתחות API: דרך ה-CLI הרשמיים שרצים על המנוי, או דרך העתק-הדבק.
+A CLI that runs **your own tasks** against models from several vendors, grades the answers, and produces a decision-ready report.
+Works without API keys: through official CLIs on your subscriptions, or by copy/paste.
 
-## התחלה מהירה
+## Quick start
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-# 1. dry run בלי עלות. מוודא שכל הצנרת עובדת (התוצאה הצפויה: good > sloppy > broken)
+# 1. Zero-cost dry run — validates the whole pipeline (expected: good > sloppy > broken)
 python -m evalkit run --config config.mock.yaml --run mock
 open results/mock/report.html
 
-# 2. בדיקת config ומשימות, בלי לקרוא לאף מודל
+# 2. Check config + tasks without calling any model
 python -m evalkit validate
 
-# 3. לוודא שכל CLI עובד לבד, לפני שמריצים את כולם
+# 3. Verify each CLI works on its own before running them all
 echo "say hi" | claude -p --output-format json
 codex exec --skip-git-repo-check "say hi"
 gemini -p "say hi"
 
-# 4. הרצה קטנה קודם (משימה אחת), ורק אחר כך הכל
+# 4. Small run first, then everything
 python -m evalkit run --run smoke --tasks gen_capacity_estimate
 python -m evalkit run --run v1
 ```
 
-### מודלים ידניים (Mistral Le Chat, GLM)
+### Manual models (e.g. Mistral Le Chat, GLM)
 ```bash
-python -m evalkit export            # יוצר manual/<model>/<task>.prompt.md
-# מדביקים כל prompt בצ'אט, ושומרים את התשובה ב-<task>.answer.md באותה תיקייה
-python -m evalkit run --run v1      # התשובות שנשמרו נאספות ומצוינות, החסרות מדולגות
+python -m evalkit export            # writes manual/<model>/<task>.prompt.md
+# paste each prompt into the chat UI, save the reply to <task>.answer.md in the same folder
+python -m evalkit run --run v1      # saved answers are picked up and graded; missing ones are skipped
 ```
-טיפ: לפתוח שיחה חדשה לכל prompt, כדי שההקשר מהשאלות הקודמות לא ישפיע על התשובה.
+Tip: open a fresh conversation per prompt so earlier context doesn't leak into the answer.
 
-### פקודות שימושיות
-| פקודה | מה עושה |
+### Useful commands
+| Command | What it does |
 |---|---|
-| `run --models claude,gemini` | רק חלק מהמודלים |
-| `run --category backend_code` | רק קטגוריה אחת |
-| `grade --run v1 --regrade` | ציון מחדש בלי לייצר תשובות מחדש (אחרי שינוי rubric) |
-| `report --run v1` | הפקת הדוח מחדש |
+| `run --models claude,gemini` | only a subset of models |
+| `run --category backend_code` | only one category |
+| `grade --run v1 --regrade` | re-grade without regenerating answers (after changing a rubric) |
+| `report --run v1` | rebuild the report |
 
-## איך זה בנוי
+## Architecture
 
 ```
-config.yaml          מי מתחרה, איך פונים אליו, ומשקל כל קטגוריה בשבילך
-tasks/*.yaml         מה בודקים: prompt, reference ו-graders
+config.yaml          who competes, how they're called, and how much each category matters to you
+tasks/*.yaml         what we test: prompt, reference, graders
 evalkit/
-  providers.py       Adapter לכל ספק מאחורי ממשק אחד: complete(Request) -> Completion
+  providers.py       one adapter per vendor behind a single interface: complete(Request) -> Completion
                      anthropic | openai_compat | cli | manual | mock
-  graders.py         python_tests (הרצת טסטים) | match (regex) | length (אילוץ) | rubric (LLM-as-judge)
-  runner.py          generate -> generations.jsonl, grade -> grades.jsonl  (שני שלבים, resumable)
-  report.py          ציון משוקלל, CI ב-bootstrap, latency, עלות, ו-drill-down לכל תשובה
+  graders.py         python_tests (execute tests) | match (regex) | length (constraint) | rubric (LLM-as-judge)
+  runner.py          generate -> generations.jsonl, grade -> grades.jsonl  (two stages, resumable)
+  report.py          weighted score, bootstrap CI, latency, cost, per-answer drill-down
 ```
 
-**החלטות תכנון ולמה התקבלו**
-- **ממשק Provider צר.** כשעוברים מ-CLI ל-API משנים שורה ב-config, לא את הקוד. כל ספק חדש הוא class אחד.
-- **Generate ו-Grade בנפרד.** אחרי שתראה תשובות אמיתיות, תרצה לשנות rubrics. התשובות הגולמיות שמורות, כך שציון מחדש לא עולה כלום.
-- **Idempotent ו-resumable.** כל תוצאה נשמרת לפי מפתח `model|task|fingerprint|rep`. אם ההרצה נפלה באמצע, מריצים שוב והיא ממשיכה מאיפה שעצרה. כשמשנים משימה, ה-fingerprint שלה משתנה, ותוצאות ישנות לא נספרות בטעות.
-- **אילוצים מוכפלים ולא ממוצעים.** תשובה ריקה "עומדת" באילוץ אורך. אם האורך היה נכנס לממוצע, היא הייתה מקבלת נקודות בחינם. התגלה בהרצת ה-mock.
-- **ממוצע של קטגוריות ולא של משימות.** אחרת הקטגוריה שכתבת לה הכי הרבה משימות שולטת בתוצאה בלי שתשים לב.
+**Design decisions and why**
+- **Narrow Provider interface.** Switching from CLI to API is a one-line config change, not a refactor. A new vendor is one class.
+- **Generate and Grade are separate stages.** Once you see real answers you'll want to change rubrics; raw outputs are stored, so re-grading is free.
+- **Idempotent and resumable.** Every result is keyed by `model|task|fingerprint|rep`. A crashed run resumes where it stopped. Editing a task changes its fingerprint, so stale results are never silently counted.
+- **Constraints multiply, they aren't averaged.** An empty answer "passes" a length limit; averaging would hand it free points (caught during the mock run).
+- **Overall = mean of category means, not of tasks.** Otherwise the category you wrote the most tasks for silently dominates.
 
-## איך לקרוא את הדוח
-- **CI 90%:** אם הטווחים של שני מודלים חופפים ברובם, ה-eval עדיין לא מבחין ביניהם. במקרה כזה מוסיפים משימות ולא מכריזים על מנצח.
-- **Inconsistency:** סטיית התקן בין החזרות. מודל עם ציון ממוצע קצת נמוך יותר אבל צפוי יותר יכול להיות בחירה טובה יותר.
-- **Judge spread** (ב-drill-down): פער גדול בין השופטים בדרך כלל אומר שה-rubric עמום, ולא שהתשובה גבולית.
-- **תמיד לקרוא תשובות בעצמך.** הציון הוא כלי לסינון, לא האמת עצמה.
+## Reading the report
+- **CI 90%** — if two models' intervals overlap heavily, the eval can't separate them yet. Add tasks; don't crown a winner.
+- **Inconsistency** — std-dev across repetitions. A slightly lower but more predictable model may be the better choice.
+- **Judge spread** (in the drill-down) — large disagreement between judges usually means a vague rubric, not a borderline answer.
+- **Always read the answers yourself.** The score is a filter, not the truth.
 
-## מגבלות שחשוב להכיר
-1. **CLI הוא לא מודל נקי.** Claude Code, Codex ו-Gemini CLI מוסיפים system prompt משלהם ואולי בוחרים מודל בעצמם. Claude Code גם טוען את `~/.claude/CLAUDE.md` שלך. מה שנמדד הוא "הכלי כמו שאתה משתמש בו". זה לגיטימי, אבל צריך לדעת את זה. כדאי לבדוק ב-`--help` של כל CLI את הדגלים לבחירת מודל ולביטול הגדרות משתמש.
-2. **Self-preference bias.** שופט נוטה להעדיף תשובות של המודל שלו. לכן יש פאנל של שני שופטים מספקים שונים. `validate` מתריע כשאותו מודל גם מתחרה וגם שופט.
-3. **קוד שהמודל כתב רץ אצלך.** הוא מוגבל ב-timeout בתוך subprocess. זה מגן מתאונות, לא מכוונה רעה. כשבודקים מודלים לא מוכרים, מריצים בתוך Docker.
-4. **Rate limits של מנויים.** ברירת המחדל היא concurrency=1 לכל CLI. כשמגיעים למגבלה מחכים ומריצים שוב, וה-resume ממשיך מאותה נקודה.
-5. **משימות ציבוריות מזוהמות.** אם המשימה מופיעה באינטרנט, ייתכן שהמודל ראה אותה באימון. משימות מהעבודה שלך מגינות מזה.
+## Limitations to be aware of
+1. **A CLI is not a clean model.** Claude Code, Codex and Gemini CLI add their own system prompts and may choose the model themselves; Claude Code also loads your `~/.claude/CLAUDE.md`. You are measuring "the tool as you use it" — legitimate, but know it. Check each CLI's `--help` for flags to pick a model and skip user settings.
+2. **Self-preference bias.** A judge tends to prefer answers from its own model family, hence a two-vendor judge panel. `validate` warns when the same model both competes and judges.
+3. **Model-written code runs on your machine** — inside a subprocess with a timeout. That protects against accidents, not malice. For unfamiliar models, run inside Docker.
+4. **Subscription rate limits.** Default concurrency is 1 per CLI. If you hit a limit, wait and re-run; resume continues where it stopped.
+5. **Contamination.** Tasks that exist publicly may have been seen in training. Tasks from your own work avoid this.
 
-## הצעד החשוב ביותר: להחליף את המשימות שלי בשלך
-11 המשימות כאן הן דוגמאות שמראות כל סוג grader. eval אמין צריך **15–30 משימות מהעבודה האמיתית שלך**:
-- באג אמיתי שתיקנת החודש, עם הטסט שתופס אותו.
-- שאלת design שהתלבטת בה, עם ה-trade-offs שבסוף הכריעו.
-- מייל או מסמך בעברית שבאמת שלחת.
+## The most important step: replace my tasks with yours
+The 11 tasks here are examples that demonstrate each grader type. A trustworthy eval needs **15–30 tasks from your real work**:
+- a real bug you fixed this month, plus the test that catches it;
+- a design question you agonized over, plus the trade-offs that decided it;
+- an email or document you actually sent, in the language you actually write in.
 
-**הכלל:** משימה טובה היא כזו שמודל חלש נכשל בה. אם כל המודלים מקבלים 1.0, היא לא תורמת כלום להחלטה.
+**Rule:** a good task is one a weak model fails. If every model scores 1.0, the task adds nothing to the decision.
 
-### תבנית למשימה חדשה
+### New task template
 ```yaml
 - id: my_task
-  category: backend_code          # או קטגוריה חדשה, ואז להוסיף לה משקל ב-config
+  category: backend_code          # or a new category (then give it a weight in config)
   prompt: |
     ...
-  reference: |                    # אופציונלי: מראה לשופט איך נראית תשובה טובה
+  reference: |                    # optional — shows the judge what "good" looks like
     ...
   graders:
-    - type: python_tests          # או match / length / rubric
+    - type: python_tests          # or match / length / rubric
       weight: 2
       tests: |
         from solution import ...
@@ -100,5 +100,5 @@ evalkit/
       criteria:
         - id: correctness
           weight: 2
-          description: התנהגות שאפשר לראות בתשובה ("מציין מה היה מודד קודם"), לא תחושה ("תובנתי")
+          description: an observable behaviour ("states what it would measure first"), not a vibe ("insightful")
 ```

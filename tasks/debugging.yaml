@@ -4,9 +4,9 @@
 - id: debug_pagination
   category: debugging
   prompt: |
-    משתמשים מדווחים שבעמוד 1 מוצגים הפריטים של עמוד 2, ושהעמוד האחרון (החלקי) לא מופיע אף פעם.
-    מצא את כל הבאגים בפונקציה, הסבר בקצרה את ה-root cause של כל אחד, והחזר את הפונקציה המתוקנת
-    במודול `solution` בתוך בלוק ```python אחד.
+    Users report that page 1 shows the items of page 2, and the last (partial) page never appears.
+    Find all the bugs in this function, briefly explain the root cause of each, and return the fixed
+    function as a module named `solution` in a single ```python code block.
 
     ```python
     def paginate(items: list, page: int, page_size: int = 10) -> dict:
@@ -20,10 +20,10 @@
                 "total_pages": total_pages, "has_next": page < total_pages}
     ```
   reference: |
-    שלושה באגים:
-    1. off-by-one: `page` הוא 1-based אבל `start = page * page_size` מתייחס אליו כ-0-based, לכן עמוד 1 מציג את פריטי עמוד 2. התיקון: `(page - 1) * page_size`.
-    2. `total_pages` מחושב בחלוקה שלמה (floor), ולכן עמוד אחרון חלקי "נעלם" ו-`has_next` שגוי. צריך ceiling.
-    3. אין ולידציה ל-page < 1 או page_size < 1 למרות שה-docstring מבטיח ValueError; עם page=0 מקבלים slice שלילי.
+    Three bugs:
+    1. Off-by-one: `page` is 1-based but `start = page * page_size` treats it as 0-based, so page 1 shows page 2's items. Fix: `(page - 1) * page_size`.
+    2. `total_pages` uses floor division, so a partial last page "disappears" and `has_next` is wrong. It needs a ceiling.
+    3. No validation for page < 1 or page_size < 1 even though the docstring promises ValueError; page=0 yields a negative slice.
 
     ```python
     def paginate(items: list, page: int, page_size: int = 10) -> dict:
