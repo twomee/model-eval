@@ -1,0 +1,18 @@
+# Zero-cost dry run: validates the whole pipeline (generate -> tests -> judge -> report).
+# Expected ranking: mock-good > mock-sloppy > mock-broken. If not, the harness is broken.
+run:
+  repetitions: 3
+  concurrency: 8
+category_weights:
+  backend_code: 2
+  debugging: 2
+  system_design: 1.5
+  hebrew_text: 1
+  general: 1
+models:
+  - {name: mock-good,   provider: mock, model: good,   price: {input: 3, output: 15}}
+  - {name: mock-sloppy, provider: mock, model: sloppy, price: {input: 1, output: 5}}
+  - {name: mock-broken, provider: mock, model: broken}
+judges:
+  - {name: judge-mock-a, provider: mock, model: judge}
+  - {name: judge-mock-b, provider: mock, model: judge}

@@ -1,0 +1,128 @@
+# Category: debugging — combine graders: tests prove the FIX works,
+# the rubric checks the EXPLANATION (finding the root cause is the senior skill).
+
+- id: debug_pagination
+  category: debugging
+  prompt: |
+    משתמשים מדווחים שבעמוד 1 מוצגים הפריטים של עמוד 2, ושהעמוד האחרון (החלקי) לא מופיע אף פעם.
+    מצא את כל הבאגים בפונקציה, הסבר בקצרה את ה-root cause של כל אחד, והחזר את הפונקציה המתוקנת
+    במודול `solution` בתוך בלוק ```python אחד.
+
+    ```python
+    def paginate(items: list, page: int, page_size: int = 10) -> dict:
+        """page is 1-based. Raises ValueError if page < 1 or page_size < 1.
+        Returns {"items": [...], "page": page, "total_pages": int, "has_next": bool}.
+        A page past the end returns an empty items list and has_next=False."""
+        total_pages = len(items) // page_size
+        start = page * page_size
+        end = start + page_size
+        return {"items": items[start:end], "page": page,
+                "total_pages": total_pages, "has_next": page < total_pages}
+    ```
+  reference: |
+    שלושה באגים:
+    1. off-by-one: `page` הוא 1-based אבל `start = page * page_size` מתייחס אליו כ-0-based, לכן עמוד 1 מציג את פריטי עמוד 2. התיקון: `(page - 1) * page_size`.
+    2. `total_pages` מחושב בחלוקה שלמה (floor), ולכן עמוד אחרון חלקי "נעלם" ו-`has_next` שגוי. צריך ceiling.
+    3. אין ולידציה ל-page < 1 או page_size < 1 למרות שה-docstring מבטיח ValueError; עם page=0 מקבלים slice שלילי.
+
+    ```python
+    def paginate(items: list, page: int, page_size: int = 10) -> dict:
+        if page < 1 or page_size < 1:
+            raise ValueError("page and page_size must be >= 1")
+        total_pages = -(-len(items) // page_size)  # ceil division
+        start = (page - 1) * page_size
+        return {"items": items[start:start + page_size], "page": page,
+                "total_pages": total_pages, "has_next": page < total_pages}
+    ```
+  graders:
+    - type: python_tests
+      weight: 2
+      tests: |
+        import pytest
+        from solution import paginate
+        ITEMS = list(range(25))
+
+        def test_first_page():
+            r = paginate(ITEMS, 1)
+            assert r["items"] == list(range(10)) and r["total_pages"] == 3 and r["has_next"] is True
+
+        def test_last_partial_page():
+            r = paginate(ITEMS, 3)
+            assert r["items"] == [20, 21, 22, 23, 24] and r["has_next"] is False
+
+        def test_exact_multiple():
+            assert paginate(list(range(20)), 2)["has_next"] is False
+            assert paginate(list(range(20)), 2)["total_pages"] == 2
+
+        def test_empty():
+            r = paginate([], 1)
+            assert r["items"] == [] and r["total_pages"] == 0 and r["has_next"] is False
+
+        def test_past_end():
+            r = paginate(ITEMS, 9)
+            assert r["items"] == [] and r["has_next"] is False
+
+        @pytest.mark.parametrize("page,size", [(0, 10), (-1, 10), (1, 0)])
+        def test_validation(page, size):
+            with pytest.raises(ValueError):
+                paginate(ITEMS, page, size)
+    - type: rubric
+      weight: 1
+      criteria:
+        - id: root_causes
+          description: Identifies all three root causes (1-based off-by-one in start, floor instead of ceil for total_pages, missing validation) and explains WHY each causes the reported symptom.
+        - id: precision
+          description: Explanation is concise and correct; no invented bugs, no irrelevant refactoring.
+
+- id: review_go_fetch_users
+  category: debugging
+  prompt: |
+    Do a code review of this Go function as a senior engineer would before approving a PR.
+    List the issues ordered by severity, and show a corrected version.
+
+    ```go
+    func FetchUsers(ids []string) ([]User, error) {
+        var users []User
+        var wg sync.WaitGroup
+        for _, id := range ids {
+            wg.Add(1)
+            go func() {
+                defer wg.Done()
+                resp, err := http.Get("https://api.internal/users/" + id)
+                if err != nil {
+                    return
+                }
+                var u User
+                json.NewDecoder(resp.Body).Decode(&u)
+                users = append(users, u)
+            }()
+        }
+        wg.Wait()
+        return users, nil
+    }
+    ```
+  reference: |
+    1. Data race: concurrent `append` to `users` from many goroutines — corrupts the slice / loses results. Use a mutex, a results channel, or preallocate `users := make([]User, len(ids))` and write by index.
+    2. Errors are swallowed: transport errors, non-2xx status codes and Decode errors are ignored; the function always returns nil error and silently returns partial data. Use errgroup and check `resp.StatusCode`.
+    3. Resource leak: `resp.Body` is never closed -> leaked connections, eventually exhausting the pool.
+    4. No timeout / context: `http.Get` uses the default client with no timeout; a hung upstream blocks forever. Accept a `context.Context` and use `http.NewRequestWithContext` with a client that has a timeout.
+    5. Unbounded concurrency: 10k ids = 10k simultaneous requests against an internal service. Limit with `errgroup.SetLimit` or a semaphore.
+    6. Minor: `id` should be `url.PathEscape`d. Loop-variable capture of `id` is only a bug before Go 1.22; on 1.22+ it's fine.
+    Corrected: errgroup.WithContext + SetLimit(8), results written by index, defer resp.Body.Close(), status check, wrapped errors.
+  graders:
+    - type: rubric
+      weight: 3
+      criteria:
+        - id: race
+          description: Identifies the data race on the shared slice and gives a correct fix (mutex, channel, or index-based writes).
+        - id: errors
+          description: Flags swallowed errors (transport, HTTP status code not checked, Decode error ignored, always returns nil).
+        - id: leak_timeouts
+          description: Flags unclosed resp.Body AND missing timeout/context.
+        - id: bounded_concurrency
+          description: Notes unbounded goroutines/requests and proposes a limit.
+        - id: accuracy_and_priority
+          description: Ordered sensibly by severity; no false claims (e.g., loop-variable capture is described with the Go 1.22 nuance, not as a definite bug); corrected code compiles in principle and fixes the issues.
+    - type: match
+      weight: 1
+      must_include: ["race", "Body\\.Close", "(timeout|context)", "StatusCode|status code"]

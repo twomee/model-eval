@@ -1,0 +1,66 @@
+# Category: system_design — no single right answer, so a rubric judge.
+# Write criteria as OBSERVABLE behaviours ("states what it would measure first"),
+# not vibes ("is insightful"). Vague criteria -> judges disagree -> noisy scores.
+
+- id: design_webhook_idempotency
+  category: system_design
+  prompt: |
+    אנחנו מקבלים webhooks של תשלומים מספק חיצוני, עד 300 בשנייה בשיא. ה-delivery הוא at-least-once:
+    אותו אירוע יכול להגיע כמה פעמים, ולא בהכרח לפי הסדר (למשל `payment.succeeded` לפני `payment.created`).
+    הסטאק: FastAPI + Postgres.
+
+    תכנן את העיבוד כך שכל שינוי מצב של תשלום יקרה בפועל פעם אחת בלבד ובמצב הנכון.
+    התייחס לכשלים ול-trade-offs. עד כ-600 מילים.
+  reference: |
+    - אימות חתימה (HMAC) ו-timestamp בכניסה; לדחות לפני כל עבודה.
+    - לשמור את האירוע הגולמי בטבלת inbox עם UNIQUE על event_id (INSERT ... ON CONFLICT DO NOTHING) ולהחזיר 2xx מהר; העיבוד אסינכרוני (worker שמושך עם SELECT ... FOR UPDATE SKIP LOCKED). כך כפילויות נבלעות ב-DB ולא בקוד.
+    - סדר: מודל מצב (state machine) לתשלום עם מעברים חוקיים בלבד ו-version/occurred_at; אירוע "ישן" לא דורס מצב חדש יותר. אירוע שהגיע מוקדם מדי (succeeded לפני created) — upsert שיוצר את התשלום או החזרה לתור עם retry.
+    - עדכון המצב ו-side effects (מייל, ledger) באותה טרנזקציה דרך outbox, כדי לא לשלוח פעמיים.
+    - כשלים: DB למטה -> מחזירים 5xx והספק עושה retry; worker נופל באמצע -> הטרנזקציה מתגלגלת אחורה והאירוע נשאר; poison message -> מונה ניסיונות ו-DLQ עם התראה. reconciliation תקופתי מול ה-API של הספק כרשת ביטחון.
+    - trade-off: עיבוד סינכרוני פשוט יותר אבל קושר את זמן התגובה לספק ל-DB ולעומס; inbox מוסיף latency ורכיב לתפעל.
+  graders:
+    - type: rubric
+      criteria:
+        - id: idempotency
+          weight: 2
+          description: Deduplicates at the storage layer (unique constraint on event id / idempotency key, ON CONFLICT) rather than relying on in-memory checks or "check then insert" races.
+        - id: ordering
+          weight: 2
+          description: Handles out-of-order events explicitly (state machine with allowed transitions, versions/timestamps, never regressing state; handles an event for a payment not yet created).
+        - id: ack_and_async
+          description: Acknowledges quickly and processes asynchronously (inbox/queue), or justifies synchronous processing at 300/s.
+        - id: failure_modes
+          weight: 2
+          description: Covers concrete failures - DB unavailable, worker crash mid-processing, poison messages/DLQ, side effects firing twice (outbox) - and reconciliation.
+        - id: security
+          description: Verifies webhook signatures / replay protection.
+        - id: tradeoffs
+          description: States explicit trade-offs and alternatives rather than a single prescriptive design.
+    - type: length
+      max_words: 800
+
+- id: design_job_queue_choice
+  category: system_design
+  prompt: |
+    הצוות צריך מערכת background jobs: בממוצע 50 jobs בשנייה, עם שיאים של 500. כל job רץ בין 1 ל-30 שניות.
+    אסור לאבד jobs, וחלק מהם צריכים להיות מתוזמנים (delay של דקות עד שעות).
+    האפשרויות שעל השולחן: Postgres עם SKIP LOCKED (כבר יש לנו Postgres), Redis, RabbitMQ, Kafka.
+    מה היית ממליץ ולמה? אילו שאלות היית שואל לפני שמחליטים?
+  reference: |
+    שאלות קודם: מה ה-SLA לזמן ההמתנה? האם jobs צריכים סדר? מה קורה בכפילות (האם ה-jobs אידמפוטנטיים)? מי יתפעל את המערכת ומה כבר רץ בפרודקשן? לאן העומס צפוי לגדול?
+    המלצה: להתחיל עם Postgres + SKIP LOCKED (או ספרייה מעליו). 500 jobs/s זה בטווח שלו, יש durability טרנזקציוני, אפשר להכניס job באותה טרנזקציה של הנתונים העסקיים (outbox מובנה), delay הוא פשוט עמודת run_at, ואין רכיב חדש לתפעל.
+    לנטר: bloat ו-vacuum בטבלת התור, ועומס על ה-primary. לעבור ל-RabbitMQ כשהקצב גדל בסדר גודל או כשהתור מתחיל להפריע ל-DB. Kafka הוא log ולא תור jobs: אין ack לכל הודעה, אין delay מובנה, ו-head-of-line blocking בתוך partition. Redis דורש הגדרת persistence (AOF) כדי לא לאבד jobs.
+  graders:
+    - type: rubric
+      criteria:
+        - id: clarifying_questions
+          weight: 2
+          description: Asks concrete clarifying questions (latency SLA, ordering, idempotency/duplicates, team ops capacity, growth) before or alongside the recommendation.
+        - id: fit_to_workload
+          weight: 2
+          description: Correctly reasons about each option's semantics for THIS workload (Kafka is a log - per-message ack/delay are awkward; Redis durability depends on persistence config; Postgres handles ~500/s and gives transactional enqueue).
+        - id: ops_and_ownership
+          description: Weighs operational cost - a new system to run, on-call, existing expertise - not only features.
+        - id: decision
+          weight: 2
+          description: Gives a clear recommendation with explicit conditions/metrics that would trigger revisiting it.

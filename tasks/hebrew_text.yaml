@@ -1,0 +1,73 @@
+# Category: hebrew_text — the language you actually work in matters.
+# Models that ace English benchmarks can still write stiff, translated-sounding Hebrew.
+
+- id: he_incident_summary
+  category: hebrew_text
+  prompt: |
+    כתוב סיכום מנהלים בעברית (עד 120 מילים) לאירוע הבא, עבור הנהלה לא-טכנית:
+    מה קרה, מה ההשפעה, מה ה-root cause, ומה עושים כדי שזה לא יחזור.
+
+    INCIDENT LOG
+    14:02 UTC  deploy of payments-api v2.41. Config change reduced DB connection pool from 50 to 5 (typo).
+    14:09      p99 latency 12s; 18% of checkout requests failing.
+    14:31      on-call identifies pool exhaustion, starts rollback.
+    14:38      rollback complete, metrics back to normal.
+    Impact: ~4,200 failed checkouts over 29 minutes; est. $61k in delayed revenue, most customers retried successfully within 24h.
+    Action items: validate config values in CI; canary deploy with automatic rollback on error-rate; alert on DB pool saturation.
+  reference: |
+    ב-3 בנובמבר, בין 14:09 ל-14:38, כ-18% מניסיונות התשלום באתר נכשלו (כ-4,200 רכישות). הסיבה הייתה טעות הקלדה בהגדרות של גרסה חדשה, שהקטינה פי עשרה את מספר החיבורים למסד הנתונים, וכך המערכת לא עמדה בעומס. הצוות זיהה את הבעיה, החזיר את הגרסה הקודמת, והשירות חזר לתקינות תוך 29 דקות. ההכנסות שנדחו מוערכות ב-61 אלף דולר, ורוב הלקוחות השלימו את הרכישה בניסיון חוזר בתוך יממה.
+    כדי למנוע הישנות: בדיקה אוטומטית של ערכי הגדרות לפני כל העלאה, העלאה הדרגתית עם חזרה אוטומטית לגרסה הקודמת כשמזוהות שגיאות, והתראה כשמסד הנתונים מתקרב לעומס מרבי.
+  graders:
+    - type: rubric
+      weight: 3
+      criteria:
+        - id: factual_accuracy
+          weight: 2
+          description: Every number and fact matches the log (times, 18%, ~4,200, $61k, 29 min). No invented details.
+        - id: completeness
+          description: Covers what happened, impact, root cause, and all three action items.
+        - id: audience_fit
+          description: Understandable to non-technical management - jargon (connection pool, p99, canary) is explained or replaced.
+        - id: hebrew_quality
+          weight: 2
+          description: Natural, fluent Hebrew that does not read like a literal translation; correct grammar and gender agreement.
+    - type: length
+      weight: 1
+      max_words: 120
+
+- id: he_pushback_email
+  category: hebrew_text
+  prompt: |
+    כתוב מייל בעברית למנהלת המוצר, דנה. היא ביקשה פיצ'ר "ייצוא דוחות מתוזמן" בתוך שבועיים,
+    והצוות מעריך שהפיצ'ר המלא ייקח 5 שבועות (מתזמן, 3 פורמטים, הרשאות, retry לשליחה).
+    המטרה: לא להגיד סתם "לא". להציע חלופה שמשרתת את הצורך העסקי שלה, ולשמור על יחסים טובים.
+    עד 200 מילים.
+  reference: |
+    נושא: ייצוא דוחות מתוזמן – הצעה לשבועיים הקרובים
+
+    היי דנה,
+    עברנו על הבקשה לייצוא דוחות מתוזמן. הפיצ'ר המלא (תזמון גמיש, שלושה פורמטים, הרשאות ושליחה חוזרת במקרה כשל) מוערך אצלנו בכ-5 שבועות. לא אוכל להתחייב לשבועיים בלי לפגוע באיכות או בפרויקטים אחרים.
+
+    מה שכן אפשר לספק בשבועיים: ייצוא שבועי קבוע ב-CSV בלבד, לאדמינים בלבד, עם התראה אלינו אם השליחה נכשלת. אם הלקוח שעומד מאחורי הבקשה צריך בעיקר לקבל את הנתונים באופן קבוע, הגרסה הזו אמורה לפתור לו את הבעיה, ואת שאר היכולות נוסיף בהדרגה לפי השימוש בפועל.
+
+    אשמח לעשות 15 דקות השבוע כדי לוודא שאני מבין נכון מה הכי קריטי לך. אולי יש פשרה אחרת שמתאימה יותר.
+
+    תודה,
+    עידו
+  graders:
+    - type: rubric
+      weight: 3
+      criteria:
+        - id: clear_position
+          description: States clearly and early that the full scope won't fit in two weeks, with the reason, without being defensive.
+        - id: constructive_alternative
+          weight: 2
+          description: Proposes a concrete reduced scope (MVP) deliverable in two weeks and ties it to the business need; offers a path for the rest.
+        - id: tone
+          description: Respectful, collaborative, invites discussion; no passive aggression or over-apologizing.
+        - id: hebrew_quality
+          weight: 2
+          description: Natural professional Hebrew as an Israeli engineer would actually write it; not stiff or translated-sounding.
+    - type: length
+      weight: 1
+      max_words: 220

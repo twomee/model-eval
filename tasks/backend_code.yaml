@@ -1,0 +1,268 @@
+# Category: backend_code — graded by EXECUTING tests. Ground truth, no judge needed.
+# Tip: the best tests target the edge case a sloppy implementation gets wrong
+# (see test_expired_evicted_before_live). Tests that only check the happy path
+# can't separate a strong model from a mediocre one.
+
+- id: py_ttl_lru_cache
+  category: backend_code
+  prompt: |
+    Implement a Python class `TTLCache` in a module named `solution`.
+
+    - `TTLCache(capacity: int, ttl_seconds: float, clock=time.monotonic)`
+      raise `ValueError` if capacity <= 0 or ttl_seconds <= 0.
+    - `get(key)` returns the value, or `None` if missing or expired. A successful get marks the key as most recently used.
+    - `put(key, value)` inserts or overwrites; overwriting resets the TTL.
+    - An entry is expired when `clock() >= inserted_at + ttl_seconds`.
+    - When inserting into a full cache, expired entries must be removed first;
+      only if the cache is still full, evict the least recently used entry.
+    - All operations should be O(1) amortized, except purging expired entries.
+
+    Return the complete module in a single ```python code block.
+  reference: |
+    ```python
+    import time
+    from collections import OrderedDict
+
+
+    class TTLCache:
+        def __init__(self, capacity, ttl_seconds, clock=time.monotonic):
+            if capacity <= 0:
+                raise ValueError("capacity must be positive")
+            if ttl_seconds <= 0:
+                raise ValueError("ttl_seconds must be positive")
+            self._cap = capacity
+            self._ttl = ttl_seconds
+            self._clock = clock
+            self._data = OrderedDict()  # key -> (value, expires_at)
+
+        def _purge_expired(self, now):
+            for k in [k for k, (_, exp) in self._data.items() if now >= exp]:
+                del self._data[k]
+
+        def get(self, key):
+            item = self._data.get(key)
+            if item is None:
+                return None
+            value, exp = item
+            if self._clock() >= exp:
+                del self._data[key]
+                return None
+            self._data.move_to_end(key)
+            return value
+
+        def put(self, key, value):
+            now = self._clock()
+            if key in self._data:
+                del self._data[key]
+            elif len(self._data) >= self._cap:
+                self._purge_expired(now)
+                if len(self._data) >= self._cap:
+                    self._data.popitem(last=False)
+            self._data[key] = (value, now + self._ttl)
+    ```
+  grader:
+    type: python_tests
+    tests: |
+      import pytest
+      from solution import TTLCache
+
+      class Clock:
+          def __init__(self): self.t = 0.0
+          def __call__(self): return self.t
+
+      def test_basic_get_put():
+          c = TTLCache(2, 10, clock=Clock()); c.put("a", 1)
+          assert c.get("a") == 1
+
+      def test_missing_returns_none():
+          assert TTLCache(2, 10, clock=Clock()).get("x") is None
+
+      def test_lru_eviction_respects_reads():
+          c = TTLCache(2, 10, clock=Clock())
+          c.put("a", 1); c.put("b", 2); c.get("a"); c.put("c", 3)
+          assert c.get("b") is None and c.get("a") == 1 and c.get("c") == 3
+
+      def test_ttl_expiry():
+          clk = Clock(); c = TTLCache(2, 10, clock=clk); c.put("a", 1)
+          clk.t = 10.0
+          assert c.get("a") is None
+
+      def test_overwrite_refreshes_ttl_and_value():
+          clk = Clock(); c = TTLCache(2, 10, clock=clk); c.put("a", 1)
+          clk.t = 8; c.put("a", 2); clk.t = 15
+          assert c.get("a") == 2
+
+      def test_expired_evicted_before_live():
+          clk = Clock(); c = TTLCache(2, 10, clock=clk)
+          c.put("a", 1); clk.t = 5; c.put("b", 2); c.get("a")   # a is now MRU
+          clk.t = 11                                              # a expired, b alive
+          c.put("c", 3)
+          assert c.get("b") == 2 and c.get("c") == 3
+
+      @pytest.mark.parametrize("cap,ttl", [(0, 10), (-1, 10), (2, 0)])
+      def test_validation(cap, ttl):
+          with pytest.raises(ValueError):
+              TTLCache(cap, ttl)
+
+- id: py_token_bucket
+  category: backend_code
+  prompt: |
+    Implement a token-bucket rate limiter in Python, in a module named `solution`.
+
+    - `TokenBucket(rate: float, capacity: int, clock=time.monotonic)`: `rate` tokens are added per second,
+      continuously (fractional tokens accumulate). The bucket starts full. Raise `ValueError` if rate <= 0 or capacity <= 0.
+    - `allow(tokens: int = 1) -> bool`: if enough tokens are available, consume them and return True; otherwise return False
+      and consume nothing. Raise `ValueError` if `tokens` > capacity or tokens <= 0.
+    - The token count never exceeds `capacity`.
+
+    Return the complete module in a single ```python code block.
+  reference: |
+    ```python
+    import time
+
+
+    class TokenBucket:
+        def __init__(self, rate, capacity, clock=time.monotonic):
+            if rate <= 0 or capacity <= 0:
+                raise ValueError("rate and capacity must be positive")
+            self._rate = float(rate)
+            self._cap = capacity
+            self._clock = clock
+            self._tokens = float(capacity)
+            self._last = clock()
+
+        def _refill(self):
+            now = self._clock()
+            self._tokens = min(self._cap, self._tokens + (now - self._last) * self._rate)
+            self._last = now
+
+        def allow(self, tokens=1):
+            if tokens <= 0 or tokens > self._cap:
+                raise ValueError("tokens must be in (0, capacity]")
+            self._refill()
+            if self._tokens >= tokens:
+                self._tokens -= tokens
+                return True
+            return False
+    ```
+  grader:
+    type: python_tests
+    tests: |
+      import pytest
+      from solution import TokenBucket
+
+      class Clock:
+          def __init__(self): self.t = 100.0
+          def __call__(self): return self.t
+
+      def test_starts_full_then_denies():
+          b = TokenBucket(1, 5, clock=Clock())
+          assert all(b.allow() for _ in range(5))
+          assert b.allow() is False
+
+      def test_fractional_refill():
+          clk = Clock(); b = TokenBucket(1, 1, clock=clk); b.allow()
+          clk.t += 0.5; assert b.allow() is False
+          clk.t += 0.5; assert b.allow() is True
+
+      def test_never_exceeds_capacity():
+          clk = Clock(); b = TokenBucket(10, 3, clock=clk)
+          clk.t += 1000
+          assert [b.allow() for _ in range(4)] == [True, True, True, False]
+
+      def test_failed_allow_consumes_nothing():
+          clk = Clock(); b = TokenBucket(1, 3, clock=clk)
+          b.allow(2)                      # 1 left
+          assert b.allow(2) is False      # must not drain the last token
+          assert b.allow(1) is True
+
+      @pytest.mark.parametrize("n", [0, -1, 4])
+      def test_bad_token_count(n):
+          with pytest.raises(ValueError):
+              TokenBucket(1, 3, clock=Clock()).allow(n)
+
+      def test_bad_ctor():
+          with pytest.raises(ValueError):
+              TokenBucket(0, 3)
+
+- id: py_async_retry
+  category: backend_code
+  prompt: |
+    Write an async retry helper in Python, in a module named `solution`:
+
+    `async def retry_async(fn, *, attempts=3, base_delay=0.1, max_delay=2.0, retry_on=(Exception,), sleep=asyncio.sleep)`
+
+    - `fn` is a zero-argument async function. Call it up to `attempts` times in total.
+    - If it raises an exception that is an instance of `retry_on`, wait `min(max_delay, base_delay * 2**i)` (i = 0 for the first retry)
+      using the injected `sleep`, then try again. No jitter.
+    - Do not sleep after the final failed attempt; re-raise the last exception.
+    - Exceptions not in `retry_on` propagate immediately without retrying.
+    - Raise `ValueError` if attempts < 1.
+    - Return fn's result on success.
+
+    Return the complete module in a single ```python code block.
+  reference: |
+    ```python
+    import asyncio
+
+
+    async def retry_async(fn, *, attempts=3, base_delay=0.1, max_delay=2.0,
+                          retry_on=(Exception,), sleep=asyncio.sleep):
+        if attempts < 1:
+            raise ValueError("attempts must be >= 1")
+        for i in range(attempts):
+            try:
+                return await fn()
+            except retry_on:
+                if i == attempts - 1:
+                    raise
+                await sleep(min(max_delay, base_delay * 2 ** i))
+    ```
+  grader:
+    type: python_tests
+    tests: |
+      import asyncio
+      import pytest
+      from solution import retry_async
+
+      def make(fail_times, exc=RuntimeError):
+          state = {"calls": 0}
+          async def fn():
+              state["calls"] += 1
+              if state["calls"] <= fail_times:
+                  raise exc("boom")
+              return "ok"
+          return fn, state
+
+      def recorder():
+          delays = []
+          async def sleep(d): delays.append(d)
+          return sleep, delays
+
+      def test_succeeds_after_failures():
+          fn, st = make(2); sleep, delays = recorder()
+          assert asyncio.run(retry_async(fn, sleep=sleep)) == "ok"
+          assert st["calls"] == 3 and delays == pytest.approx([0.1, 0.2])
+
+      def test_exhausts_and_reraises_without_final_sleep():
+          fn, st = make(10); sleep, delays = recorder()
+          with pytest.raises(RuntimeError):
+              asyncio.run(retry_async(fn, sleep=sleep))
+          assert st["calls"] == 3 and len(delays) == 2
+
+      def test_non_retryable_propagates_immediately():
+          fn, st = make(1, exc=KeyError); sleep, delays = recorder()
+          with pytest.raises(KeyError):
+              asyncio.run(retry_async(fn, retry_on=(RuntimeError,), sleep=sleep))
+          assert st["calls"] == 1 and delays == []
+
+      def test_delay_cap():
+          fn, _ = make(10); sleep, delays = recorder()
+          with pytest.raises(RuntimeError):
+              asyncio.run(retry_async(fn, attempts=6, base_delay=1, max_delay=3, sleep=sleep))
+          assert delays == [1, 2, 3, 3, 3]
+
+      def test_invalid_attempts():
+          fn, _ = make(0)
+          with pytest.raises(ValueError):
+              asyncio.run(retry_async(fn, attempts=0))

@@ -1,0 +1,39 @@
+# Category: general — everyday questions and advice.
+# Mix one objectively checkable item (forced answer format + regex) with open-ended ones.
+
+- id: gen_capacity_estimate
+  category: general
+  prompt: |
+    For a service with 1,000,000 daily active users, each making 20 API requests per day on average,
+    where peak traffic is 3x the daily average rate: what is the peak requests-per-second?
+    Show brief reasoning, then end with a final line exactly in the form `ANSWER: <integer>` (rounded to the nearest integer).
+  reference: |
+    20M requests/day ÷ 86,400 s ≈ 231.5 RPS average; × 3 ≈ 694.4.
+    ANSWER: 694
+  grader:
+    type: match
+    must_include: ["ANSWER:\\s*69[45]\\b"]
+
+- id: gen_consult_first_two_weeks
+  category: general
+  prompt: |
+    אני מהנדס mid-senior. ראש הצוות ביקש ממני לקחת ownership על הוצאת ה-auth מהמונוליט לסרוויס נפרד.
+    אין לי עדיין תמונה מלאה של כמה קוד תלוי ב-auth. איך כדאי לי לגשת לשבועיים הראשונים?
+  reference: |
+    שבוע 1, למפות לפני שכותבים קוד: לרשום כל נקודה במונוליט שקוראת ל-auth (session, הרשאות, טוקנים) ולמדוד traffic. לזהות מי ה-stakeholders: צוותים צורכים, security, SRE. להגדיר עם ראש הצוות מה נחשב "הצלחה" ומה לא בסקופ.
+    לנסח design doc קצר: גבולות הסרוויס, חוזה API, מה קורה כשהסרוויס למטה (latency, fail-open או fail-closed), ואסטרטגיית migration בשיטת strangler: facade בתוך המונוליט, dual-run או shadow traffic, ו-feature flag שמאפשר rollback מיידי.
+    שבוע 2: review לדוק עם security ועם הצוותים הצורכים, ו-spike קטן שמוציא מסלול אחד בעל סיכון נמוך (למשל אימות טוקן לקריאה בלבד) מאחורי flag, עם מדדים.
+    לתקשר סיכונים והערכת זמנים מוקדם. ownership פירושו גם להגיד מה לא יודעים עדיין.
+  grader:
+    type: rubric
+    criteria:
+      - id: discovery_first
+        weight: 2
+        description: Prioritizes mapping dependencies/usage and defining scope before writing code.
+      - id: stakeholders
+        description: Identifies stakeholders (consumers, security, ops) and alignment/communication steps - what ownership means beyond code.
+      - id: migration_safety
+        weight: 2
+        description: Proposes an incremental migration with rollback (strangler/facade, feature flags, shadow traffic) and addresses failure behaviour of the new service.
+      - id: actionable
+        description: Concrete, sequenced steps for the two weeks rather than generic advice.

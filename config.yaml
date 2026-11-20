@@ -1,0 +1,90 @@
+# Who competes, how they're called, and how much each category matters TO YOU.
+#
+# provider types:
+#   cli           -> official CLI on your subscription (no API key). Prompt via stdin or "{prompt}" arg.
+#   manual        -> you paste prompts into the chat UI (`python -m evalkit export`), save replies to files.
+#   anthropic     -> Anthropic API (needs key)
+#   openai_compat -> OpenAI / Gemini / Mistral / GLM APIs (need keys) — all speak /chat/completions
+#
+# CLI flags change between versions: verify each command with `<cli> --help` before the first run.
+
+run:
+  repetitions: 3        # same prompt N times -> measures consistency, smooths luck. manual is always 1.
+  concurrency: 4        # global cap; cli/manual default to 1 per model (subscriptions rate-limit)
+  temperature: 0.0      # ignored by CLIs
+  max_tokens: 4096
+  timeout_s: 300
+  code_timeout_s: 30
+
+# "Best for me" = your weights. Raise what you use daily, lower what you rarely need.
+category_weights:
+  backend_code: 2
+  debugging: 2
+  system_design: 1.5
+  hebrew_text: 1
+  general: 1
+
+models:
+  # ---------- subscriptions via official CLIs ----------
+  - name: claude
+    provider: cli
+    # -p = headless print mode; JSON output gives us token usage too.
+    command: ["claude", "-p", "--output-format", "json"]
+    parse: claude_json
+
+  - name: chatgpt-codex
+    provider: cli
+    # codex refuses to run outside a git repo without this flag; we run in an empty temp dir.
+    command: ["codex", "exec", "--skip-git-repo-check", "{prompt}"]
+
+  - name: gemini
+    provider: cli
+    command: ["gemini", "-p", "{prompt}"]
+
+  # ---------- subscriptions without a CLI: copy/paste ----------
+  - name: mistral-lechat
+    provider: manual
+
+  - name: glm
+    provider: manual
+    # If your GLM subscription is the "Coding Plan", you likely have an API key for its coding endpoint.
+    # Then replace the two lines above with:
+    # provider: openai_compat
+    # base_url: https://api.z.ai/api/coding/paas/v4
+    # model: glm-5.3            # verify the exact id in your Z.ai console
+    # api_key_env: ZAI_API_KEY
+
+  # ---------- API alternatives (uncomment when you have keys) ----------
+  # - name: claude-api
+  #   provider: anthropic
+  #   model: claude-opus-5-5
+  #   api_key_env: ANTHROPIC_API_KEY
+  #   price: {input: null, output: null}   # USD per 1M tokens - copy from the pricing page
+  # - name: gpt-api
+  #   provider: openai_compat
+  #   base_url: https://api.openai.com/v1
+  #   model: gpt-5.5                       # verify
+  #   api_key_env: OPENAI_API_KEY
+  #   params: {max_tokens: null, max_completion_tokens: 4096, temperature: null}  # reasoning models
+  # - name: gemini-api
+  #   provider: openai_compat
+  #   base_url: https://generativelanguage.googleapis.com/v1beta/openai/
+  #   model: gemini-3.8-flash              # verify; free tier available in AI Studio
+  #   api_key_env: GEMINI_API_KEY
+  # - name: mistral-api
+  #   provider: openai_compat
+  #   base_url: https://api.mistral.ai/v1
+  #   model: mistral-large-latest
+  #   api_key_env: MISTRAL_API_KEY
+
+# LLM-as-judge for rubric graders. A PANEL of judges from different vendors reduces
+# self-preference bias (a model tends to like answers that sound like itself).
+# Judge disagreement is shown per answer in the report.
+judges:
+  - name: judge-claude
+    provider: cli
+    command: ["claude", "-p", "--output-format", "json"]
+    parse: claude_json
+  - name: judge-gemini
+    provider: cli
+    command: ["gemini", "-p", "{prompt}"]
