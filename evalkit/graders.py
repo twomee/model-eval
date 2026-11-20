@@ -2,7 +2,7 @@
 
 Rule of thumb for choosing a grader (cheapest + most objective first):
   1. Can you execute it?           -> python_tests   (ground truth)
-  2. Is there a checkable fact?    -> match / length (deterministic)
+  2. Is there a checkable fact?    -> match / length / language (deterministic)
   3. Only judgment can tell?       -> rubric         (LLM-as-judge; noisy, biased, but scales)
 Combine them: a debugging task can be scored by tests on the fix AND a rubric on the explanation.
 """
@@ -91,6 +91,24 @@ async def grade_length(task: Task, answer: str, cfg: dict, ctx: GradingContext) 
     return GradeResult("length", score, details={"words": words, "range": [lo, hi]})
 
 
+_SCRIPTS = {"he": re.compile(r"[א-ת]"), "en": re.compile(r"[A-Za-z]")}
+
+
+async def grade_language(task: Task, answer: str, cfg: dict, ctx: GradingContext) -> GradeResult:
+    """Answer must be mostly in the expected language. Technical terms in English are
+    normal in Hebrew text, hence a ratio threshold rather than 'no Latin at all'."""
+    expected, min_ratio = cfg["expected"], cfg.get("min_ratio", 0.6)
+    prose = _CODE_BLOCK.sub("", re.sub(r"`[^`]*`", "", answer))  # code doesn't count
+    # Count WORDS, not letters: Hebrew is written without vowels, so a letter count
+    # under-weights Hebrew against English terms of the same "size".
+    words = prose.split()
+    counts = {lang: sum(1 for w in words if rx.search(w)) for lang, rx in _SCRIPTS.items()}
+    total = sum(counts.values())
+    ratio = counts[expected] / total if total else 0.0
+    score = 1.0 if ratio >= min_ratio else ratio / min_ratio
+    return GradeResult("language", score, details={"expected": expected, "ratio": round(ratio, 3)})
+
+
 # --------------------------------------------------------------------------- rubric (LLM-as-judge)
 
 JUDGE_SYSTEM = """You are a strict, impartial evaluator. You grade ONE candidate answer against a rubric.
@@ -154,12 +172,13 @@ async def grade_rubric(task: Task, answer: str, cfg: dict, ctx: GradingContext) 
     return GradeResult("rubric", score, details={"judges": per_judge, "judge_spread": round(spread, 3)})
 
 
-CONSTRAINTS = {"length"}
+CONSTRAINTS = {"length", "language"}
 
 GRADERS = {
     "python_tests": grade_python_tests,
     "match": grade_match,
     "length": grade_length,
+    "language": grade_language,
     "rubric": grade_rubric,
 }
 

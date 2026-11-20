@@ -50,7 +50,7 @@ tasks/*.yaml         what we test: prompt, reference, graders
 evalkit/
   providers.py       one adapter per vendor behind a single interface: complete(Request) -> Completion
                      anthropic | openai_compat | cli | manual | mock
-  graders.py         python_tests (execute tests) | match (regex) | length (constraint) | rubric (LLM-as-judge)
+  graders.py         python_tests (execute tests) | match (regex) | length, language (constraints) | rubric (LLM-as-judge)
   runner.py          generate -> generations.jsonl, grade -> grades.jsonl  (two stages, resumable)
   report.py          weighted score, bootstrap CI, latency, cost, per-answer drill-down
 ```
@@ -60,6 +60,7 @@ evalkit/
 - **Generate and Grade are separate stages.** Once you see real answers you'll want to change rubrics; raw outputs are stored, so re-grading is free.
 - **Idempotent and resumable.** Every result is keyed by `model|task|fingerprint|rep`. A crashed run resumes where it stopped. Editing a task changes its fingerprint, so stale results are never silently counted.
 - **Constraints multiply, they aren't averaged.** An empty answer "passes" a length limit; averaging would hand it free points (caught during the mock run).
+- **Prompt language = answer language.** Tasks are written in the language you'd actually use (Hebrew tasks have Hebrew prompts). The `language` constraint counts *words*, not letters — Hebrew has no written vowels, so letter counts under-weight it.
 - **Overall = mean of category means, not of tasks.** Otherwise the category you wrote the most tasks for silently dominates.
 
 ## Reading the report
@@ -92,7 +93,7 @@ The 11 tasks here are examples that demonstrate each grader type. A trustworthy 
   reference: |                    # optional — shows the judge what "good" looks like
     ...
   graders:
-    - type: python_tests          # or match / length / rubric
+    - type: python_tests          # or match / length / language / rubric
       weight: 2
       tests: |
         from solution import ...

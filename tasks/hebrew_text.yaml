@@ -1,11 +1,14 @@
-# Category: hebrew_text — the language you actually work in matters.
-# Models that ace English benchmarks can still write stiff, translated-sounding Hebrew.
+# Category: hebrew_text — Hebrew in, Hebrew out (matches real usage: same language both ways).
+# Prompts are intentionally in Hebrew: they are test DATA, not docs. Testing an English prompt
+# would measure a scenario that never happens in practice.
+# Models that ace English benchmarks can still write stiff, translated-sounding Hebrew,
+# or silently answer in English - the `language` constraint catches the latter.
 
 - id: he_incident_summary
   category: hebrew_text
   prompt: |
-    Write an executive summary IN HEBREW (up to 120 words) of the following incident, for non-technical management:
-    what happened, the impact, the root cause, and what we're doing so it doesn't happen again.
+    כתוב סיכום מנהלים (עד 120 מילים) לאירוע הבא, עבור הנהלה לא-טכנית:
+    מה קרה, מה ההשפעה, מה ה-root cause, ומה עושים כדי שזה לא יחזור.
 
     INCIDENT LOG
     14:02 UTC  deploy of payments-api v2.41. Config change reduced DB connection pool from 50 to 5 (typo).
@@ -32,16 +35,17 @@
           weight: 2
           description: Natural, fluent Hebrew that does not read like a literal translation; correct grammar and gender agreement.
     - type: length
-      weight: 1
       max_words: 120
+    - type: language
+      expected: he
 
 - id: he_pushback_email
   category: hebrew_text
   prompt: |
-    Write an email IN HEBREW to Dana, the product manager. She asked for a "scheduled report export" feature within two weeks;
-    the team estimates the full feature at 5 weeks (scheduler, 3 formats, permissions, delivery retries).
-    The goal: don't just say "no" - propose an alternative that serves her business need, and keep the relationship good.
-    Up to 200 words.
+    כתוב מייל למנהלת המוצר, דנה. היא ביקשה פיצ'ר "ייצוא דוחות מתוזמן" בתוך שבועיים,
+    והצוות מעריך שהפיצ'ר המלא ייקח 5 שבועות (מתזמן, 3 פורמטים, הרשאות, retry לשליחה).
+    המטרה: לא להגיד סתם "לא". להציע חלופה שמשרתת את הצורך העסקי שלה, ולשמור על יחסים טובים.
+    עד 200 מילים.
   reference: |
     נושא: ייצוא דוחות מתוזמן – הצעה לשבועיים הקרובים
 
@@ -69,5 +73,6 @@
           weight: 2
           description: Natural professional Hebrew as an Israeli engineer would actually write it; not stiff or translated-sounding.
     - type: length
-      weight: 1
       max_words: 220
+    - type: language
+      expected: he
