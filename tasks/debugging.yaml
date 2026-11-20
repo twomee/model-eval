@@ -126,3 +126,93 @@
     - type: match
       weight: 1
       must_include: ["race", "Body\\.Close", "(timeout|context)", "StatusCode|status code"]
+
+- id: debug_shared_defaults
+  category: debugging
+  prompt: |
+    Bug report: after one user turns off email notifications, other users who never touched that setting
+    also see email notifications turned off - until the process restarts. Separately, saving
+    `{"privacy": {"public": False}}` crashes with a KeyError.
+
+    Find the root causes, explain them briefly, and return a fixed version as a module named `solution`
+    in a single ```python code block. Keep the public function `merge_settings(overrides, defaults=None)`:
+    when `defaults` is omitted, the built-in defaults below are used. Inputs must never be mutated,
+    and nested dicts are merged recursively.
+
+    ```python
+    def merge_settings(overrides, defaults={"theme": "light", "notifications": {"email": True, "sms": False}}):
+        """Return user settings: defaults deep-merged with overrides."""
+        result = defaults
+        for key, value in overrides.items():
+            if isinstance(value, dict):
+                result[key].update(value)
+            else:
+                result[key] = value
+        return result
+    ```
+  reference: |
+    Root causes:
+    1. `result = defaults` aliases the default dict, and a mutable default argument is created ONCE at function
+       definition, so every call mutates the same shared object - one user's override leaks into everyone's settings.
+    2. `result[key].update(value)` mutates the nested dict in place (same sharing problem one level down) and is
+       only a one-level merge, not a recursive one.
+    3. `result[key]` raises KeyError when the override introduces a nested section that has no default.
+
+    ```python
+    import copy
+
+    DEFAULTS = {"theme": "light", "notifications": {"email": True, "sms": False}}
+
+
+    def _deep_merge(base, overrides):
+        out = copy.deepcopy(base)
+        for key, value in overrides.items():
+            if isinstance(value, dict) and isinstance(out.get(key), dict):
+                out[key] = _deep_merge(out[key], value)
+            else:
+                out[key] = copy.deepcopy(value)
+        return out
+
+
+    def merge_settings(overrides, defaults=None):
+        return _deep_merge(DEFAULTS if defaults is None else defaults, overrides)
+    ```
+  graders:
+    - type: python_tests
+      weight: 2
+      tests: |
+        import copy
+        from solution import merge_settings
+
+        def test_no_leak_between_calls():
+            a = merge_settings({"notifications": {"email": False}})
+            assert a["notifications"] == {"email": False, "sms": False}
+            b = merge_settings({})
+            assert b == {"theme": "light", "notifications": {"email": True, "sms": False}}
+
+        def test_explicit_defaults_not_mutated():
+            d = {"a": {"b": 1, "c": 2}}
+            snapshot = copy.deepcopy(d)
+            merge_settings({"a": {"b": 9}}, d)
+            assert d == snapshot
+
+        def test_result_not_aliased_to_overrides():
+            o = {"notifications": {"email": False}}
+            r = merge_settings(o)
+            r["notifications"]["email"] = True
+            assert o == {"notifications": {"email": False}}
+
+        def test_new_nested_section():
+            r = merge_settings({"privacy": {"public": False}})
+            assert r["privacy"] == {"public": False} and r["theme"] == "light"
+
+        def test_recursive_merge():
+            d = {"x": {"y": {"z": 1, "w": 2}}}
+            assert merge_settings({"x": {"y": {"z": 5}}}, d) == {"x": {"y": {"z": 5, "w": 2}}}
+    - type: rubric
+      criteria:
+        - id: root_causes
+          weight: 2
+          description: Explains the mutable-default-argument / aliasing cause (shared object across calls), the in-place nested mutation, and the KeyError for missing nested keys.
+        - id: precision
+          description: Concise and correct; does not invent unrelated bugs.

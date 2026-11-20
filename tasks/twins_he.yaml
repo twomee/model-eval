@@ -1,0 +1,86 @@
+# Hebrew twins of English tasks. Each inherits the original's category and graders
+# (`twin_of`), so the ONLY variable is the language you work in.
+# The report's "HE vs EN" column = mean(score_he - score_en) over pairs:
+# how much a model loses when you think with it in Hebrew. Negative = Hebrew penalty.
+#
+# Translate the TASK, not just the words: same facts, same difficulty, same constraints.
+
+- id: gen_capacity_estimate_he
+  twin_of: gen_capacity_estimate
+  prompt: |
+    לשירות יש 1,000,000 משתמשים פעילים ביום, וכל אחד מבצע בממוצע 20 קריאות API ביום.
+    בשעות השיא התעבורה גבוהה פי 3 מהקצב היומי הממוצע. מה מספר הבקשות לשנייה בשיא?
+    הצג חישוב קצר, וסיים בשורה בדיוק בפורמט `ANSWER: <מספר שלם>` (מעוגל למספר השלם הקרוב).
+  reference: |
+    20 מיליון בקשות ביום חלקי 86,400 שניות ביממה זה בערך 231.5 בקשות בשנייה בממוצע; כפול 3 בשיא יוצא בערך 694.4.
+    ANSWER: 694
+  extra_graders:
+    - type: language
+      expected: he
+      min_ratio: 0.5   # short numeric answers: a few Latin tokens weigh more
+
+- id: debug_pagination_he
+  twin_of: debug_pagination
+  prompt: |
+    משתמשים מדווחים שבעמוד 1 מוצגים הפריטים של עמוד 2, ושהעמוד האחרון (החלקי) לא מופיע אף פעם.
+    מצא את כל הבאגים בפונקציה, הסבר בקצרה את ה-root cause של כל אחד, והחזר את הפונקציה המתוקנת
+    במודול `solution` בתוך בלוק ```python אחד.
+
+    ```python
+    def paginate(items: list, page: int, page_size: int = 10) -> dict:
+        """page is 1-based. Raises ValueError if page < 1 or page_size < 1.
+        Returns {"items": [...], "page": page, "total_pages": int, "has_next": bool}.
+        A page past the end returns an empty items list and has_next=False."""
+        total_pages = len(items) // page_size
+        start = page * page_size
+        end = start + page_size
+        return {"items": items[start:end], "page": page,
+                "total_pages": total_pages, "has_next": page < total_pages}
+    ```
+  reference: |
+    שלושה באגים:
+    1. off-by-one: הפרמטר `page` מתחיל מ-1, אבל `start = page * page_size` מתייחס אליו כאילו הוא מתחיל מ-0, ולכן עמוד 1 מציג את הפריטים של עמוד 2. התיקון: `(page - 1) * page_size`.
+    2. `total_pages` מחושב בחלוקה שלמה כלפי מטה, ולכן עמוד אחרון חלקי נעלם ו-`has_next` שגוי. צריך לעגל כלפי מעלה.
+    3. אין בדיקה של page < 1 או page_size < 1, למרות שה-docstring מבטיח ValueError. עם page=0 מתקבל slice שלילי.
+
+    ```python
+    def paginate(items: list, page: int, page_size: int = 10) -> dict:
+        if page < 1 or page_size < 1:
+            raise ValueError("page and page_size must be >= 1")
+        total_pages = -(-len(items) // page_size)  # ceil division
+        start = (page - 1) * page_size
+        return {"items": items[start:start + page_size], "page": page,
+                "total_pages": total_pages, "has_next": page < total_pages}
+    ```
+  extra_graders:
+    - type: language
+      expected: he
+
+- id: design_job_queue_choice_he
+  twin_of: design_job_queue_choice
+  prompt: |
+    הצוות צריך מערכת background jobs: בממוצע 50 jobs בשנייה, עם שיאים של 500. כל job רץ בין 1 ל-30 שניות.
+    אסור לאבד jobs, וחלק מהם צריכים להיות מתוזמנים (delay של דקות עד שעות).
+    האפשרויות שעל השולחן: Postgres עם SKIP LOCKED (כבר יש לנו Postgres), Redis, RabbitMQ, Kafka.
+    מה היית ממליץ ולמה? אילו שאלות היית שואל לפני שמחליטים?
+  reference: |
+    שאלות קודם: מה ה-SLA לזמן ההמתנה בתור? האם ה-jobs צריכים לרוץ בסדר מסוים? מה קורה כשאותו job רץ פעמיים, כלומר האם הם אידמפוטנטיים? מי יתפעל את המערכת ומה כבר רץ אצלנו בפרודקשן? כמה העומס צפוי לגדול?
+    המלצה: להתחיל עם Postgres ו-SKIP LOCKED, או עם ספרייה שבנויה מעליו. 500 jobs בשנייה זה בטווח שלו, השמירה טרנזקציונית, אפשר להכניס job לתור באותה טרנזקציה של הנתונים העסקיים, delay הוא פשוט עמודת run_at, ואין רכיב חדש לתפעל.
+    מה לנטר: נפיחות של טבלת התור ו-vacuum, והעומס על ה-primary. לעבור ל-RabbitMQ כשהקצב גדל בסדר גודל או כשהתור מתחיל להעמיס על מסד הנתונים. Kafka הוא log ולא תור jobs: אין אישור לכל הודעה בנפרד, אין delay מובנה, והודעה איטית חוסמת את כל מה שאחריה באותו partition. ב-Redis צריך להגדיר persistence (AOF) כדי לא לאבד jobs.
+  extra_graders:
+    - type: language
+      expected: he
+
+- id: gen_consult_first_two_weeks_he
+  twin_of: gen_consult_first_two_weeks
+  prompt: |
+    אני מהנדס mid-senior. ראש הצוות ביקש ממני לקחת ownership על הוצאת ה-auth מהמונוליט לסרוויס נפרד.
+    אין לי עדיין תמונה מלאה של כמה קוד תלוי ב-auth. איך כדאי לי לגשת לשבועיים הראשונים?
+  reference: |
+    שבוע ראשון, למפות לפני שכותבים קוד: לרשום כל מקום במונוליט שנוגע ב-auth (sessions, הרשאות, טוקנים) ולמדוד כמה תעבורה עוברת בכל אחד. לזהות את בעלי העניין: הצוותים שמשתמשים ב-auth, אבטחה ו-SRE. להגדיר עם ראש הצוות מה ייחשב הצלחה ומה לא נכלל בפרויקט.
+    לכתוב design doc קצר: גבולות הסרוויס, חוזה ה-API, מה קורה כשהסרוויס לא זמין (latency, והאם לאפשר או לחסום גישה), ואסטרטגיית מעבר הדרגתית בשיטת strangler: שכבת facade בתוך המונוליט, הרצה כפולה או shadow traffic, ו-feature flag שמאפשר לחזור אחורה מיד.
+    שבוע שני: לעבור על המסמך עם אבטחה ועם הצוותים שמשתמשים ב-auth, ולהעביר מסלול אחד בסיכון נמוך (למשל אימות טוקן לקריאה בלבד) מאחורי flag, עם מדדים.
+    לדווח מוקדם על סיכונים ועל הערכות זמנים. ownership כולל גם להגיד בבירור מה עוד לא ידוע.
+  extra_graders:
+    - type: language
+      expected: he

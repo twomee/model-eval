@@ -1,0 +1,336 @@
+# Category: backend_code (Go) — executed with `go test -race`.
+# Concurrency code that "looks right" is the classic place models (and people) fail;
+# the race detector turns that into a hard, objective signal.
+# Requires a Go toolchain; without it these graders are excluded (not scored 0).
+
+- id: go_parallel_map
+  category: backend_code
+  prompt: |
+    Implement in Go, in `package solution`, using the standard library only:
+
+    ```go
+    func ParallelMap[T, R any](ctx context.Context, in []T, limit int,
+        fn func(context.Context, T) (R, error)) ([]R, error)
+    ```
+
+    - Results are returned in input order.
+    - At most `limit` calls to `fn` run concurrently. Return a non-nil error if limit < 1.
+    - On the first error from `fn`: cancel the context passed to in-flight calls, start no new calls,
+      and return that error (results may be nil).
+    - If the parent `ctx` is already canceled (or gets canceled), return its error.
+    - Empty input returns an empty result and nil error.
+
+    Return the complete file in a single ```go code block.
+  reference: |
+    ```go
+    package solution
+
+    import (
+    	"context"
+    	"errors"
+    	"sync"
+    )
+
+    func ParallelMap[T, R any](ctx context.Context, in []T, limit int,
+    	fn func(context.Context, T) (R, error)) ([]R, error) {
+    	if limit < 1 {
+    		return nil, errors.New("limit must be >= 1")
+    	}
+    	ctx, cancel := context.WithCancel(ctx)
+    	defer cancel()
+
+    	out := make([]R, len(in))
+    	sem := make(chan struct{}, limit)
+    	var (
+    		wg       sync.WaitGroup
+    		once     sync.Once
+    		firstErr error
+    	)
+    	for i, v := range in {
+    		select {
+    		case sem <- struct{}{}:
+    		case <-ctx.Done():
+    		}
+    		if ctx.Err() != nil {
+    			break
+    		}
+    		wg.Add(1)
+    		go func(i int, v T) {
+    			defer wg.Done()
+    			defer func() { <-sem }()
+    			r, err := fn(ctx, v)
+    			if err != nil {
+    				once.Do(func() { firstErr = err; cancel() })
+    				return
+    			}
+    			out[i] = r
+    		}(i, v)
+    	}
+    	wg.Wait()
+    	if firstErr != nil {
+    		return nil, firstErr
+    	}
+    	if err := ctx.Err(); err != nil { // only the parent can have canceled us here
+    		return nil, err
+    	}
+    	return out, nil
+    }
+    ```
+  grader:
+    type: go_tests
+    race: true
+    tests: |
+      package solution
+
+      import (
+      	"context"
+      	"errors"
+      	"sync/atomic"
+      	"testing"
+      	"time"
+      )
+
+      func TestOrderPreserved(t *testing.T) {
+      	in := []int{5, 1, 4, 2, 3}
+      	out, err := ParallelMap(context.Background(), in, 3, func(_ context.Context, v int) (int, error) {
+      		time.Sleep(time.Duration(v) * time.Millisecond)
+      		return v * 10, nil
+      	})
+      	if err != nil {
+      		t.Fatal(err)
+      	}
+      	want := []int{50, 10, 40, 20, 30}
+      	for i := range want {
+      		if out[i] != want[i] {
+      			t.Fatalf("got %v want %v", out, want)
+      		}
+      	}
+      }
+
+      func TestConcurrencyLimit(t *testing.T) {
+      	var cur, peak int64
+      	_, err := ParallelMap(context.Background(), make([]int, 40), 4, func(_ context.Context, _ int) (int, error) {
+      		n := atomic.AddInt64(&cur, 1)
+      		for {
+      			p := atomic.LoadInt64(&peak)
+      			if n <= p || atomic.CompareAndSwapInt64(&peak, p, n) {
+      				break
+      			}
+      		}
+      		time.Sleep(2 * time.Millisecond)
+      		atomic.AddInt64(&cur, -1)
+      		return 0, nil
+      	})
+      	if err != nil {
+      		t.Fatal(err)
+      	}
+      	if peak > 4 {
+      		t.Fatalf("peak concurrency %d exceeds limit 4", peak)
+      	}
+      	if peak < 2 {
+      		t.Fatalf("peak concurrency %d: calls are not running in parallel", peak)
+      	}
+      }
+
+      func TestFirstErrorCancelsOthers(t *testing.T) {
+      	boom := errors.New("boom")
+      	var started int64
+      	in := make([]int, 100)
+      	for i := range in {
+      		in[i] = i
+      	}
+      	_, err := ParallelMap(context.Background(), in, 2, func(ctx context.Context, v int) (int, error) {
+      		atomic.AddInt64(&started, 1)
+      		if v == 3 {
+      			return 0, boom
+      		}
+      		select {
+      		case <-ctx.Done():
+      			return 0, ctx.Err()
+      		case <-time.After(20 * time.Millisecond):
+      			return v, nil
+      		}
+      	})
+      	if !errors.Is(err, boom) {
+      		t.Fatalf("want boom, got %v", err)
+      	}
+      	if n := atomic.LoadInt64(&started); n > 10 {
+      		t.Fatalf("%d calls started; should stop launching after the first error", n)
+      	}
+      }
+
+      func TestParentContextCanceled(t *testing.T) {
+      	ctx, cancel := context.WithCancel(context.Background())
+      	cancel()
+      	_, err := ParallelMap(ctx, []int{1, 2, 3}, 2, func(_ context.Context, v int) (int, error) { return v, nil })
+      	if !errors.Is(err, context.Canceled) {
+      		t.Fatalf("want context.Canceled, got %v", err)
+      	}
+      }
+
+      func TestInvalidLimit(t *testing.T) {
+      	if _, err := ParallelMap(context.Background(), []int{1}, 0, func(_ context.Context, v int) (int, error) { return v, nil }); err == nil {
+      		t.Fatal("want error for limit 0")
+      	}
+      }
+
+      func TestEmptyInput(t *testing.T) {
+      	out, err := ParallelMap(context.Background(), []int{}, 2, func(_ context.Context, v int) (int, error) { return v, nil })
+      	if err != nil || len(out) != 0 {
+      		t.Fatalf("got %v, %v", out, err)
+      	}
+      }
+
+- id: go_sliding_window_limiter
+  category: backend_code
+  prompt: |
+    Implement a sliding-window-log rate limiter in Go, in `package solution`, standard library only:
+
+    ```go
+    func NewLimiter(limit int, window time.Duration, now func() time.Time) *Limiter
+    func (l *Limiter) Allow(key string) bool
+    ```
+
+    - Each key is limited independently to `limit` allowed requests per sliding `window`.
+    - A previously ALLOWED request at time t counts against the key while `now() - t < window`.
+      Rejected requests do not count.
+    - `Allow` must be safe for concurrent use by many goroutines.
+    - Timestamps outside the window should not accumulate in memory for a key that keeps being used.
+    - If `now` is nil, use `time.Now`.
+
+    Return the complete file in a single ```go code block.
+  reference: |
+    ```go
+    package solution
+
+    import (
+    	"sync"
+    	"time"
+    )
+
+    type Limiter struct {
+    	mu     sync.Mutex
+    	limit  int
+    	window time.Duration
+    	now    func() time.Time
+    	hits   map[string][]time.Time
+    }
+
+    func NewLimiter(limit int, window time.Duration, now func() time.Time) *Limiter {
+    	if now == nil {
+    		now = time.Now
+    	}
+    	return &Limiter{limit: limit, window: window, now: now, hits: make(map[string][]time.Time)}
+    }
+
+    func (l *Limiter) Allow(key string) bool {
+    	l.mu.Lock()
+    	defer l.mu.Unlock()
+    	now := l.now()
+    	ts := l.hits[key]
+    	i := 0
+    	for i < len(ts) && now.Sub(ts[i]) >= l.window {
+    		i++
+    	}
+    	ts = ts[i:]
+    	if len(ts) >= l.limit {
+    		l.hits[key] = ts
+    		return false
+    	}
+    	l.hits[key] = append(ts, now)
+    	return true
+    }
+    ```
+  grader:
+    type: go_tests
+    race: true
+    tests: |
+      package solution
+
+      import (
+      	"sync"
+      	"sync/atomic"
+      	"testing"
+      	"time"
+      )
+
+      var base = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+      type fakeClock struct {
+      	mu sync.Mutex
+      	t  time.Time
+      }
+
+      func (c *fakeClock) Now() time.Time { c.mu.Lock(); defer c.mu.Unlock(); return c.t }
+      func (c *fakeClock) At(d time.Duration) { c.mu.Lock(); c.t = base.Add(d); c.mu.Unlock() }
+
+      func newClock() *fakeClock { return &fakeClock{t: base} }
+
+      func TestLimitPerKey(t *testing.T) {
+      	c := newClock()
+      	l := NewLimiter(3, time.Second, c.Now)
+      	got := []bool{l.Allow("a"), l.Allow("a"), l.Allow("a"), l.Allow("a")}
+      	if got[0] != true || got[1] != true || got[2] != true || got[3] != false {
+      		t.Fatalf("got %v", got)
+      	}
+      }
+
+      func TestKeysIndependent(t *testing.T) {
+      	c := newClock()
+      	l := NewLimiter(1, time.Second, c.Now)
+      	if !l.Allow("a") || !l.Allow("b") || l.Allow("a") {
+      		t.Fatal("keys must be limited independently")
+      	}
+      }
+
+      func TestWindowSlides(t *testing.T) {
+      	c := newClock()
+      	l := NewLimiter(2, time.Second, c.Now)
+      	steps := []struct {
+      		at   time.Duration
+      		want bool
+      	}{
+      		{0, true}, {400 * time.Millisecond, true}, {600 * time.Millisecond, false},
+      		{1000 * time.Millisecond, true},  // t=0 has left the window
+      		{1300 * time.Millisecond, false}, // 0.4 and 1.0 still inside
+      		{1410 * time.Millisecond, true},  // 0.4 has left
+      	}
+      	for _, s := range steps {
+      		c.At(s.at)
+      		if got := l.Allow("k"); got != s.want {
+      			t.Fatalf("at %v: got %v want %v", s.at, got, s.want)
+      		}
+      	}
+      }
+
+      func TestRejectedRequestsDoNotCount(t *testing.T) {
+      	c := newClock()
+      	l := NewLimiter(1, time.Second, c.Now)
+      	l.Allow("k")
+      	c.At(500 * time.Millisecond)
+      	l.Allow("k") // rejected
+      	c.At(1000 * time.Millisecond)
+      	if !l.Allow("k") {
+      		t.Fatal("a rejected request must not extend the window")
+      	}
+      }
+
+      func TestConcurrentExactlyLimit(t *testing.T) {
+      	c := newClock()
+      	l := NewLimiter(10, time.Minute, c.Now)
+      	var allowed int64
+      	var wg sync.WaitGroup
+      	for i := 0; i < 200; i++ {
+      		wg.Add(1)
+      		go func() {
+      			defer wg.Done()
+      			if l.Allow("hot") {
+      				atomic.AddInt64(&allowed, 1)
+      			}
+      		}()
+      	}
+      	wg.Wait()
+      	if allowed != 10 {
+      		t.Fatalf("allowed %d, want exactly 10", allowed)
+      	}
+      }

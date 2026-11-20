@@ -64,3 +64,42 @@
         - id: decision
           weight: 2
           description: Gives a clear recommendation with explicit conditions/metrics that would trigger revisiting it.
+
+- id: design_distributed_rate_limiter
+  category: system_design
+  prompt: |
+    Design rate limiting for a public API: 100 requests per minute per API key. Traffic goes through
+    20 stateless API-gateway instances behind a load balancer; Redis is available.
+    Requirements: limits roughly accurate across all instances, under 5 ms added latency at p99,
+    and a clear answer for what happens when Redis is unavailable. Up to ~500 words.
+  reference: |
+    Algorithm: a single fixed window allows 2x bursts at window edges; a sliding log is exact but stores every
+    timestamp; a sliding-window counter (current + weighted previous window) or a token bucket gives good
+    accuracy with O(1) memory per key. Choose token bucket or sliding-window counter.
+    Atomicity: do read-modify-write in one Redis round trip via a Lua script (or INCR + PEXPIRE inside MULTI)
+    so concurrent gateways can't race past the limit. Key per API key, with TTL so idle keys expire.
+    Latency: one round trip to a nearby Redis is ~1 ms; pipeline, use connection pooling, and shard with
+    Redis Cluster by key so hot keys don't share a node. Optionally a small local token cache per gateway
+    for very hot keys, trading a little accuracy for latency.
+    Redis down: decide explicitly. Fail-open (allow) keeps the API up but removes protection; fail-closed
+    protects backends but turns a Redis outage into an API outage. Usual answer: fail-open with a
+    conservative per-instance local limit (100/20 per minute) and alert.
+    Client contract: 429 with Retry-After and X-RateLimit-Limit/Remaining/Reset headers.
+  graders:
+    - type: rubric
+      criteria:
+        - id: algorithm_tradeoffs
+          weight: 2
+          description: Compares at least two algorithms (fixed window boundary bursts, sliding log memory, sliding-window counter / token bucket) and justifies the choice.
+        - id: atomicity
+          weight: 2
+          description: Makes the check-and-increment atomic across instances (Lua script / MULTI) and explains the race it prevents.
+        - id: failure_mode
+          weight: 2
+          description: Explicitly chooses fail-open vs fail-closed for Redis outages, with consequences and a fallback (e.g. local per-instance limit).
+        - id: latency_scaling
+          description: Addresses the latency budget and hot keys (round trips, pooling/pipelining, sharding, optional local cache).
+        - id: client_contract
+          description: Specifies the client-facing behaviour (429, Retry-After, rate-limit headers).
+    - type: length
+      max_words: 700

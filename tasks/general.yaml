@@ -37,3 +37,17 @@
         description: Proposes an incremental migration with rollback (strangler/facade, feature flags, shadow traffic) and addresses failure behaviour of the new service.
       - id: actionable
         description: Concrete, sequenced steps for the two weeks rather than generic advice.
+
+- id: gen_availability_math
+  category: general
+  prompt: |
+    A service runs 3 replicas. Each replica is independently available 99.5% of the time.
+    The service is up when at least 2 of the 3 replicas are up.
+    What is the service's availability, as a percentage? Show brief reasoning, then end with a final line
+    exactly in the form `ANSWER: <percentage with 4 decimal places>` (e.g. `ANSWER: 12.3456`).
+  reference: |
+    p = 0.995, q = 0.005. P(at least 2 up) = p^3 + 3*p^2*q = 0.985074875 + 0.014850375 = 0.99992525.
+    ANSWER: 99.9925
+  grader:
+    type: match
+    must_include: ["ANSWER:\\s*99\\.992[45]\\b"]

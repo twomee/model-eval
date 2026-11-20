@@ -1,7 +1,7 @@
 """Graders: turn a model's answer into a score in [0, 1].
 
 Rule of thumb for choosing a grader (cheapest + most objective first):
-  1. Can you execute it?           -> python_tests   (ground truth)
+  1. Can you execute it?           -> python_tests / go_tests   (ground truth)
   2. Is there a checkable fact?    -> match / length / language (deterministic)
   3. Only judgment can tell?       -> rubric         (LLM-as-judge; noisy, biased, but scales)
 Combine them: a debugging task can be scored by tests on the fix AND a rubric on the explanation.
@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
+import shutil
 import sys
 import tempfile
 from dataclasses import dataclass, field
@@ -68,6 +70,68 @@ async def grade_python_tests(task: Task, answer: str, cfg: dict, ctx: GradingCon
     total = sum(counts.values())
     score = counts.get("passed", 0) / total if total else 0.0
     return GradeResult("python_tests", score, details={"counts": counts, "output_tail": text[-800:]})
+
+
+# --------------------------------------------------------------------------- go_tests
+
+_GO_BLOCK = re.compile(r"```go[ \t]*\n(.*?)```", re.S)
+
+
+def extract_go(answer: str) -> str | None:
+    # Prefer the block that declares the package we compile; fall back to the longest.
+    blocks = _GO_BLOCK.findall(answer)
+    pkg = [b for b in blocks if re.search(r"^\s*package\s+solution\b", b, re.M)]
+    return max(pkg or blocks, key=len) if blocks else None
+
+
+async def grade_go_tests(task: Task, answer: str, cfg: dict, ctx: GradingContext) -> GradeResult:
+    if shutil.which("go") is None:
+        # Not the model's fault -> excluded from the mean, not scored 0.
+        return GradeResult("go_tests", None, details={"error": "go toolchain not installed"})
+    code = extract_go(answer)
+    if code is None:
+        return GradeResult("go_tests", 0.0, details={"error": "no go code block"})
+    with tempfile.TemporaryDirectory(prefix="evalkit-go-") as d:
+        Path(d, "go.mod").write_text("module solution\n\ngo 1.22\n", encoding="utf-8")
+        Path(d, "solution.go").write_text(code, encoding="utf-8")
+        Path(d, "solution_test.go").write_text(cfg["tests"], encoding="utf-8")
+        args = ["go", "test", "-v", "-count=1", "-timeout", f"{int(ctx.settings.code_timeout_s)}s"]
+        if cfg.get("race"):  # concurrency tasks: the race detector IS the test
+            args.append("-race")
+        proc = await asyncio.create_subprocess_exec(
+            *args, ".", cwd=d, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+            env={**os.environ, "GOFLAGS": "-mod=mod", "GOTOOLCHAIN": "local"})
+        try:
+            # compile time is real time: give go a bit more than the test timeout
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=ctx.settings.code_timeout_s + 60)
+        except asyncio.TimeoutError:
+            proc.kill()
+            return GradeResult("go_tests", 0.0, details={"error": "timeout"})
+    text = out.decode(errors="replace")
+    # count top-level tests only (subtests are indented)
+    passed = len(re.findall(r"^--- PASS", text, re.M))
+    failed = len(re.findall(r"^--- FAIL", text, re.M))
+    # Distinguish failure modes: "build failed" vs "deadlock" lead you to very different fixes.
+    if "WARNING: DATA RACE" in text:
+        error = "data race"
+    elif "panic: test timed out" in text:
+        error = "test timeout (deadlock or infinite loop?)"
+    elif re.search(r"\[build failed\]|\[setup failed\]", text):
+        error = "build failed"
+    elif re.search(r"^panic:", text, re.M):
+        error = "panic"
+    else:
+        error = None
+    if error == "data race":  # a race is disqualifying even if assertions happened to pass
+        return GradeResult("go_tests", 0.0, details={"error": error, "output_tail": text[-800:]})
+    if error:  # the crashing test never reports --- FAIL; count it as one failure
+        failed += 1
+    total = passed + failed
+    if total == 0:
+        return GradeResult("go_tests", 0.0, details={"error": error or "no tests ran", "output_tail": text[-800:]})
+    return GradeResult("go_tests", passed / total,
+                       details={"counts": {"passed": passed, "failed": failed}, "error": error,
+                                "output_tail": text[-800:]})
 
 
 # --------------------------------------------------------------------------- match / length
@@ -176,6 +240,7 @@ CONSTRAINTS = {"length", "language"}
 
 GRADERS = {
     "python_tests": grade_python_tests,
+    "go_tests": grade_go_tests,
     "match": grade_match,
     "length": grade_length,
     "language": grade_language,

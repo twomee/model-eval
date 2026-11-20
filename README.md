@@ -5,9 +5,12 @@ Works without API keys: through official CLIs on your subscriptions, or by copy/
 
 ## Quick start
 
+Requirements: Python 3.10+, and Go 1.22+ for the Go tasks (without Go they're skipped, not scored 0).
+
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+python -m pytest                    # harness tests + every task's reference passes its own graders
 
 # 1. Zero-cost dry run — validates the whole pipeline (expected: good > sloppy > broken)
 python -m evalkit run --config config.mock.yaml --run mock
@@ -46,11 +49,12 @@ Tip: open a fresh conversation per prompt so earlier context doesn't leak into t
 
 ```
 config.yaml          who competes, how they're called, and how much each category matters to you
-tasks/*.yaml         what we test: prompt, reference, graders
+tasks/*.yaml         what we test: prompt, reference, graders (twins_he.yaml = Hebrew twins of English tasks)
+tests/               harness unit tests + golden test over all tasks
 evalkit/
   providers.py       one adapter per vendor behind a single interface: complete(Request) -> Completion
                      anthropic | openai_compat | cli | manual | mock
-  graders.py         python_tests (execute tests) | match (regex) | length, language (constraints) | rubric (LLM-as-judge)
+  graders.py         python_tests, go_tests (execute tests) | match (regex) | length, language (constraints) | rubric (LLM-as-judge)
   runner.py          generate -> generations.jsonl, grade -> grades.jsonl  (two stages, resumable)
   report.py          weighted score, bootstrap CI, latency, cost, per-answer drill-down
 ```
@@ -62,9 +66,13 @@ evalkit/
 - **Constraints multiply, they aren't averaged.** An empty answer "passes" a length limit; averaging would hand it free points (caught during the mock run).
 - **Prompt language = answer language.** Tasks are written in the language you'd actually use (Hebrew tasks have Hebrew prompts). The `language` constraint counts *words*, not letters — Hebrew has no written vowels, so letter counts under-weight it.
 - **Overall = mean of category means, not of tasks.** Otherwise the category you wrote the most tasks for silently dominates.
+- **EN/HE twins inherit graders (`twin_of`).** One source of truth: fix a test once and both languages get it, so the only variable in the comparison is the language.
+- **Golden test over every task.** A broken test or regex punishes all models equally and never shows on the leaderboard. CI fails if any reference answer doesn't pass its own deterministic graders.
+- **Go concurrency tasks run with `-race`.** A detected data race scores 0 even if the assertions happened to pass. Failures are labelled (build failed / deadlock / panic / race), because each points to a different fix.
 
 ## Reading the report
 - **CI 90%** — if two models' intervals overlap heavily, the eval can't separate them yet. Add tasks; don't crown a winner.
+- **HE vs EN** — mean score change on the *same task* in Hebrew vs English. Negative = the model gets worse when you work in Hebrew. With only a few pairs this is noisy: treat it as a signal to investigate, and add pairs before trusting it.
 - **Inconsistency** — std-dev across repetitions. A slightly lower but more predictable model may be the better choice.
 - **Judge spread** (in the drill-down) — large disagreement between judges usually means a vague rubric, not a borderline answer.
 - **Always read the answers yourself.** The score is a filter, not the truth.
@@ -77,12 +85,14 @@ evalkit/
 5. **Contamination.** Tasks that exist publicly may have been seen in training. Tasks from your own work avoid this.
 
 ## The most important step: replace my tasks with yours
-The 11 tasks here are examples that demonstrate each grader type. A trustworthy eval needs **15–30 tasks from your real work**:
+The 22 tasks here (6 backend code incl. 2 Go, 4 debugging, 4 system design, 5 general, 3 Hebrew writing; 4 of them have Hebrew twins) are examples that demonstrate each grader type. A trustworthy eval needs **15–30 tasks from your real work**:
 - a real bug you fixed this month, plus the test that catches it;
 - a design question you agonized over, plus the trade-offs that decided it;
 - an email or document you actually sent, in the language you actually write in.
 
 **Rule:** a good task is one a weak model fails. If every model scores 1.0, the task adds nothing to the decision.
+
+Workflow for a new task: write it, run `python -m pytest` (the golden test proves your reference passes your graders), then run it against models.
 
 ### New task template
 ```yaml
@@ -93,7 +103,7 @@ The 11 tasks here are examples that demonstrate each grader type. A trustworthy 
   reference: |                    # optional — shows the judge what "good" looks like
     ...
   graders:
-    - type: python_tests          # or match / length / language / rubric
+    - type: python_tests          # or go_tests / match / length / language / rubric
       weight: 2
       tests: |
         from solution import ...
@@ -102,4 +112,15 @@ The 11 tasks here are examples that demonstrate each grader type. A trustworthy 
         - id: correctness
           weight: 2
           description: an observable behaviour ("states what it would measure first"), not a vibe ("insightful")
+
+# Hebrew twin of an existing task: inherits category + graders
+- id: my_task_he
+  twin_of: my_task
+  prompt: |
+    ...
+  reference: |
+    ...
+  extra_graders:
+    - type: language
+      expected: he
 ```

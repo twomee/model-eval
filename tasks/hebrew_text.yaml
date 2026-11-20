@@ -6,6 +6,7 @@
 
 - id: he_incident_summary
   category: hebrew_text
+  lang: he
   prompt: |
     כתוב סיכום מנהלים (עד 120 מילים) לאירוע הבא, עבור הנהלה לא-טכנית:
     מה קרה, מה ההשפעה, מה ה-root cause, ומה עושים כדי שזה לא יחזור.
@@ -41,6 +42,7 @@
 
 - id: he_pushback_email
   category: hebrew_text
+  lang: he
   prompt: |
     כתוב מייל למנהלת המוצר, דנה. היא ביקשה פיצ'ר "ייצוא דוחות מתוזמן" בתוך שבועיים,
     והצוות מעריך שהפיצ'ר המלא ייקח 5 שבועות (מתזמן, 3 פורמטים, הרשאות, retry לשליחה).
@@ -74,5 +76,36 @@
           description: Natural professional Hebrew as an Israeli engineer would actually write it; not stiff or translated-sounding.
     - type: length
       max_words: 220
+    - type: language
+      expected: he
+
+- id: he_explain_caching
+  category: hebrew_text
+  lang: he
+  prompt: |
+    מנהלת השיווק (לא טכנית) שואלת: "למה האתר נטען מהר יותר אחרי הכניסה הראשונה? ולמה לפעמים אני עדיין
+    רואה את המחיר הישן גם אחרי שעדכנו אותו?" תסביר לה במייל קצר, עד 150 מילים, ותגיד לה מה היא יכולה לעשות
+    כשזה קורה.
+  reference: |
+    היי,
+    כדי שהאתר ייטען מהר, הדפדפן שלך ושרתים בדרך שומרים עותק של חלקים מהדף. זה נקרא cache. בכניסה הראשונה הכל מגיע מהשרת שלנו, ומהפעם השנייה חלק גדול מגיע מהעותק השמור, ולכן זה מהיר יותר.
+    החיסרון הוא שעותק כזה יכול להיות ישן. כשמעדכנים מחיר, עותקים ישנים עדיין מוצגים עד שהם מתחלפים, בדרך כלל תוך כמה דקות.
+    אם את רואה מחיר ישן: קודם נסי רענון מלא (Ctrl+Shift+R, או Cmd+Shift+R במק). אם זה לא עוזר, תכתבי לנו, ואנחנו יכולים לנקות את העותקים השמורים מיד. אם יש עדכון מחירים דחוף, כמו מבצע, תעדכני אותנו מראש ונדאג שהוא יופיע מיד.
+  graders:
+    - type: rubric
+      criteria:
+        - id: correct_concept
+          weight: 2
+          description: Correctly explains caching (stored copies) AND why stale data appears (copies not yet refreshed / TTL), without technical errors.
+        - id: accessible
+          weight: 2
+          description: Understandable to a non-technical reader; jargon is avoided or explained in plain words.
+        - id: actionable
+          description: Gives concrete actions (hard refresh, contacting the team to purge, giving advance notice for urgent price changes).
+        - id: hebrew_quality
+          weight: 2
+          description: Natural, fluent Hebrew; correct grammar and gender agreement (the reader is a woman).
+    - type: length
+      max_words: 150
     - type: language
       expected: he

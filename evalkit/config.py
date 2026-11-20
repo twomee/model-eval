@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -62,6 +62,10 @@ class Task:
     graders: list[dict[str, Any]]
     system: str | None = None
     reference: str | None = None   # ideal answer: shown to the judge, used by mock
+    # Same task in two languages shares a `pair` id; the report then shows how much
+    # each model loses when you work in Hebrew instead of English.
+    pair: str | None = None
+    lang: str = "en"
 
     @property
     def fingerprint(self) -> str:
@@ -103,17 +107,38 @@ def load_config(path: Path) -> Config:
 
 
 def load_tasks(tasks_dir: Path) -> list[Task]:
-    tasks: list[Task] = []
+    """Load tasks. A doc with `twin_of: <id>` is a translation of another task: it INHERITS
+    the original's category and graders (single source of truth - fix a test once, both
+    sides get it) and may add `extra_graders` (e.g. a language constraint)."""
+    raw: list[dict[str, Any]] = []
     for f in sorted(tasks_dir.glob("*.yaml")):
         docs = yaml.safe_load(f.read_text(encoding="utf-8"))
-        for d in docs if isinstance(docs, list) else [docs]:
-            graders = d.get("graders") or [d["grader"]]
-            tasks.append(Task(
-                id=d["id"], category=d["category"], prompt=d["prompt"],
-                graders=graders, system=d.get("system"), reference=d.get("reference"),
-            ))
-    ids = [t.id for t in tasks]
-    dupes = {i for i in ids if ids.count(i) > 1}
-    if dupes:
+        raw.extend(docs if isinstance(docs, list) else [docs])
+
+    ids = [d["id"] for d in raw]
+    if dupes := {i for i in ids if ids.count(i) > 1}:
         raise ValueError(f"Duplicate task ids: {dupes}")
-    return tasks
+
+    by_id: dict[str, Task] = {}
+    for d in (d for d in raw if "twin_of" not in d):
+        by_id[d["id"]] = Task(
+            id=d["id"], category=d["category"], prompt=d["prompt"],
+            graders=d.get("graders") or [d["grader"]], system=d.get("system"),
+            reference=d.get("reference"), lang=d.get("lang", "en"))
+
+    for d in (d for d in raw if "twin_of" in d):
+        orig = by_id.get(d["twin_of"])
+        if orig is None:
+            raise ValueError(f"task {d['id']}: twin_of unknown task {d['twin_of']!r}")
+        if orig.pair:
+            raise ValueError(f"task {orig.id} already has a twin")
+        lang = d.get("lang", "he")
+        if lang == orig.lang:
+            raise ValueError(f"task {d['id']}: twin must be in a different language than {orig.id}")
+        by_id[orig.id] = replace(orig, pair=orig.id)
+        by_id[d["id"]] = Task(
+            id=d["id"], category=orig.category, prompt=d["prompt"],
+            graders=orig.graders + (d.get("extra_graders") or []), system=d.get("system", orig.system),
+            reference=d.get("reference"), pair=orig.id, lang=lang)
+
+    return [by_id[i] for i in ids]

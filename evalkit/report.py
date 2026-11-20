@@ -16,7 +16,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from .config import Config
+from .config import Config, Task
 from .runner import read_jsonl
 
 
@@ -59,11 +59,16 @@ def _bootstrap_ci(task_means: dict[str, float], task_cat: dict[str, str], weight
     return samples[int(0.05 * n)], samples[int(0.95 * n)]
 
 
-def build_summary(cfg: Config, run_dir: Path) -> dict[str, Any]:
+def build_summary(cfg: Config, run_dir: Path, tasks: list[Task] | None = None) -> dict[str, Any]:
     gens = _latest(read_jsonl(run_dir / "generations.jsonl"))
     grades = _latest(read_jsonl(run_dir / "grades.jsonl"))
     task_cat = {g["task_id"]: g["category"] for g in gens.values()}
     categories = sorted(set(task_cat.values()))
+    # pair id -> {lang: task_id}, for the Hebrew-vs-English comparison
+    pairs: dict[str, dict[str, str]] = defaultdict(dict)
+    for t in tasks or []:
+        if t.pair:
+            pairs[t.pair][t.lang] = t.id
 
     per_model: dict[str, dict[str, Any]] = {}
     matrix: dict[str, dict[str, float]] = defaultdict(dict)   # task -> model -> mean score
@@ -90,6 +95,8 @@ def build_summary(cfg: Config, run_dir: Path) -> dict[str, Any]:
         costs = [g["cost_usd"] for g in g_ok if g.get("cost_usd") is not None]
         out_tok = [g["output_tokens"] for g in g_ok if g.get("output_tokens")]
         lo, hi = _bootstrap_ci(task_means, task_cat, cfg.category_weights)
+        deltas = [task_means[p['he']] - task_means[p['en']] for p in pairs.values()
+                  if p.get('he') in task_means and p.get('en') in task_means]
         per_model[m] = {
             "name": m, "provider": spec.provider, "empty": False,
             "overall": _weighted_overall(task_means, task_cat, cfg.category_weights),
@@ -99,10 +106,11 @@ def build_summary(cfg: Config, run_dir: Path) -> dict[str, Any]:
             "latency_p50": _pct(lat, 0.5), "latency_p95": _pct(lat, 0.95),
             "avg_output_tokens": st.mean(out_tok) if out_tok else None,
             "total_cost": sum(costs) if costs else None,
+            "he_vs_en": st.mean(deltas) if deltas else None, "n_pairs": len(deltas),
         }
     ranked = sorted((p for p in per_model.values() if not p["empty"]), key=lambda p: -p["overall"])
     ranked += [p for p in per_model.values() if p["empty"]]
-    return {"models": ranked, "categories": categories, "matrix": matrix,
+    return {"models": ranked, "categories": categories, "matrix": matrix, "has_pairs": bool(pairs),
             "gens": gens, "grades": grades, "weights": cfg.category_weights}
 
 
@@ -119,19 +127,27 @@ def _cell(x: float | None) -> str:
     return f"<td style='background:hsl({hue} 60% 88%)'>{x:.2f}</td>"
 
 
+def _delta_cell(d: float | None, n: int) -> str:
+    if d is None:
+        return "<td class='na'>–</td>"
+    # within +/-0.05 is noise at this sample size; color only real gaps
+    color = "#c62828" if d < -0.05 else "#2e7d32" if d > 0.05 else "#666"
+    return f"<td style='color:{color}'><b>{d:+.2f}</b><br><small>{n} pairs</small></td>"
+
+
 def write_csv(summary: dict[str, Any], path: Path) -> None:
     cats = summary["categories"]
     with path.open("w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["model", "provider", "overall", "ci90_low", "ci90_high", *cats, "n_tasks", "errors",
-                    "inconsistency", "latency_p50_s", "latency_p95_s", "avg_output_tokens", "total_cost_usd"])
+                    "he_vs_en", "inconsistency", "latency_p50_s", "latency_p95_s", "avg_output_tokens", "total_cost_usd"])
         for p in summary["models"]:
             if p["empty"]:
-                w.writerow([p["name"], p["provider"]] + [""] * (len(cats) + 10))
+                w.writerow([p["name"], p["provider"]] + [""] * (len(cats) + 11))
                 continue
             w.writerow([p["name"], p["provider"], round(p["overall"], 4), round(p["ci90"][0], 4),
                         round(p["ci90"][1], 4), *[None if p["categories"][c] is None else round(p["categories"][c], 4) for c in cats],
-                        p["n_tasks"], p["errors"], p["inconsistency"], p["latency_p50"], p["latency_p95"],
+                        p["n_tasks"], p["errors"], p["he_vs_en"], p["inconsistency"], p["latency_p50"], p["latency_p95"],
                         p["avg_output_tokens"], p["total_cost"]])
 
 
@@ -139,10 +155,11 @@ def write_html(summary: dict[str, Any], path: Path) -> None:
     e, cats, models = html.escape, summary["categories"], summary["models"]
     weights = summary["weights"]
     head = "".join(f"<th>{e(c)}<br><small>w={weights.get(c, 1.0)}</small></th>" for c in cats)
+    he_head = "<th>HE vs EN<br><small>Δ score</small></th>" if summary["has_pairs"] else ""
     rows = []
     for i, p in enumerate(models, 1):
         if p["empty"]:
-            rows.append(f"<tr><td>{i}</td><td>{e(p['name'])}</td><td colspan='{len(cats) + 7}' class='na'>"
+            rows.append(f"<tr><td>{i}</td><td>{e(p['name'])}</td><td colspan='{len(cats) + 7 + summary["has_pairs"]}' class='na'>"
                         f"no graded results (errors: {p['errors']})</td></tr>")
             continue
         lo, hi = p["ci90"]
@@ -150,6 +167,7 @@ def write_html(summary: dict[str, Any], path: Path) -> None:
             f"<tr><td>{i}</td><td><b>{e(p['name'])}</b><br><small>{e(p['provider'])}</small></td>"
             f"{_cell(p['overall'])}<td><small>{lo:.2f}–{hi:.2f}</small></td>"
             + "".join(_cell(p["categories"][c]) for c in cats)
+            + (_delta_cell(p["he_vs_en"], p["n_pairs"]) if summary["has_pairs"] else "")
             + f"<td>{_fmt(p['inconsistency'])}</td><td>{_fmt(p['latency_p50'], 's')} / {_fmt(p['latency_p95'], 's')}</td>"
               f"<td>{_fmt(p['avg_output_tokens'], 'int')}</td><td>{_fmt(p['total_cost'], 'usd')}</td>"
               f"<td>{p['errors']}</td></tr>")
@@ -192,10 +210,10 @@ def write_html(summary: dict[str, Any], path: Path) -> None:
 <h1>Model eval report</h1>
 <p class="note"><b>How to read this:</b> overall = weighted mean of category means.
 CI = 90% bootstrap interval over tasks — if two models' intervals overlap a lot, the eval can't separate them yet.
-Inconsistency = mean std-dev across repetitions (lower = more predictable).</p>
+Inconsistency = mean std-dev across repetitions (lower = more predictable). HE vs EN = mean score change on the same task in Hebrew vs English (negative = the model gets worse in Hebrew).</p>
 <h2>Leaderboard</h2>
 <table><tr><th>#</th><th>model</th><th>overall</th><th>CI 90%</th>{head}
-<th>inconsistency</th><th>latency p50/p95</th><th>avg out tokens</th><th>cost</th><th>errors</th></tr>
+{he_head}<th>inconsistency</th><th>latency p50/p95</th><th>avg out tokens</th><th>cost</th><th>errors</th></tr>
 {''.join(rows)}</table>
 <h2>Per task</h2>
 <table><tr><th>task</th>{''.join(f'<th>{e(n)}</th>' for n in names)}</tr>{task_rows}</table>

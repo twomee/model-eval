@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import shutil
 import sys
 from pathlib import Path
 
@@ -56,6 +57,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"tasks OK: {len(tasks)} -> {by_cat}")
         if not cfg.judges and any(g["type"] == "rubric" for t in tasks for g in t.graders):
             print("WARNING: rubric graders present but no judges configured")
+        if shutil.which("go") is None and any(g["type"] == "go_tests" for t in tasks for g in t.graders):
+            print("WARNING: go toolchain not found -> go_tests graders will be skipped (install Go 1.22+)")
+        n_pairs = len({t.pair for t in tasks if t.pair})
+        if n_pairs:
+            print(f"pairs: {n_pairs} EN/HE task pairs -> 'HE vs EN' column in the report")
         def ident(s):  # what actually runs, not the label
             return (s.provider, s.model, s.command)
         competitors = {ident(m): m.name for m in cfg.models}
@@ -74,14 +80,15 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "grade":
         asyncio.run(grade_all(cfg, tasks, run_dir, regrade=args.regrade))
 
-    summary = build_summary(cfg, run_dir)
+    summary = build_summary(cfg, run_dir, tasks)
     write_html(summary, run_dir / "report.html")
     write_csv(summary, run_dir / "summary.csv")
     print(f"\nreport: {run_dir / 'report.html'}")
     for i, p in enumerate(summary["models"], 1):
         if not p["empty"]:
             lo, hi = p["ci90"]
-            print(f"  {i}. {p['name']:<20} {p['overall']:.3f}  (90% CI {lo:.2f}–{hi:.2f})")
+            he = f"  HE vs EN {p['he_vs_en']:+.2f}" if p.get("he_vs_en") is not None else ""
+            print(f"  {i}. {p['name']:<20} {p['overall']:.3f}  (90% CI {lo:.2f}–{hi:.2f}){he}")
     return 0
 
 
