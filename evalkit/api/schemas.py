@@ -110,3 +110,64 @@ class EstimateOut(BaseModel):
     subscriptions: list[SubscriptionCostOut]
     notes: list[str]
     command: str
+
+
+# ---------------------------------------------------------------- results / comparison
+
+class RunOut(BaseModel):
+    name: str
+    has_report: bool
+    n_answers: int
+    updated_at: float
+
+
+class RankedOut(BaseModel):
+    name: str
+    score: float
+    ci_low: float
+    ci_high: float
+    n_tasks: int
+    leader: bool
+
+
+class RankingOut(BaseModel):
+    label: str
+    weights: dict[str, float]
+    verdict: str
+    models: list[RankedOut]
+    head_to_head_names: list[str]
+    head_to_head: list[list[float | None]] = Field(description="[row][col] = P(row beats col); None on the diagonal")
+
+
+class FlaggedTaskOut(BaseModel):
+    task: str
+    verdict: str
+    min: float
+    max: float
+
+
+class ScoreRowOut(BaseModel):
+    name: str
+    fit: float = Field(description="fit for you: weighted by category_weights, 0..1")
+    fit_margin: float = Field(description="half-width of the 90% interval")
+    general: float = Field(description="every category weighted equally, 0..1")
+    general_margin: float
+    reliability: float | None = Field(description="share of all attempts with a usable answer; None = no attempts")
+    usable: int
+    attempts: int
+    errors: int
+    categories: dict[str, float | None]
+    leader_fit: bool
+    leader_general: bool
+
+
+class ComparisonOut(BaseModel):
+    run: str
+    usable_threshold: float
+    categories: list[str]
+    scorecard: list[ScoreRowOut]
+    for_you: RankingOut
+    general: RankingOut
+    notes: list[str]
+    flagged_tasks: list[FlaggedTaskOut]
+    report_url: str | None

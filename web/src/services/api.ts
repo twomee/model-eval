@@ -1,4 +1,6 @@
-import type { DoctorResponse, EstimateRequest, EstimateResponse, ModelsResponse, PlanOptions } from '../types/api'
+import type {
+  ComparisonResponse, DoctorResponse, EstimateRequest, EstimateResponse, ModelsResponse, PlanOptions, RunInfo,
+} from '../types/api'
 
 /** An HTTP error with the server's `detail` message, so the UI can show *why*. */
 export class ApiError extends Error {
@@ -57,6 +59,10 @@ export const api = {
       body: JSON.stringify(body),
       signal,
     }),
+
+  listRuns: () => request<RunInfo[]>('/api/runs'),
+
+  comparison: (run: string) => request<ComparisonResponse>(`/api/runs/${encodeURIComponent(run)}/comparison`),
 }
 
 export type Api = typeof api

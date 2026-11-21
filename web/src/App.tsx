@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 import { ModelsPage } from './pages/ModelsPage'
 import { PlanPage } from './pages/PlanPage'
+import { ResultsPage } from './pages/ResultsPage'
 import { api } from './services/api'
 
-const PAGES = { models: 'Models', plan: 'Plan run' } as const
+const PAGES = { models: 'Models', plan: 'Plan run', results: 'Results' } as const
 type Page = keyof typeof PAGES
 
 // The page lives in the URL hash (#plan): reload and back/forward keep you where you were,
@@ -33,7 +34,9 @@ export default function App() {
         </nav>
       </header>
       <main>
-        {page === 'models' ? <ModelsPage client={api} /> : <PlanPage client={api} />}
+        {page === 'models' && <ModelsPage client={api} />}
+        {page === 'plan' && <PlanPage client={api} />}
+        {page === 'results' && <ResultsPage client={api} />}
       </main>
     </div>
   )

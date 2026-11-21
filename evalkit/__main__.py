@@ -145,13 +145,28 @@ def main(argv: list[str] | None = None) -> int:
     if flagged:
         print(f"  ! {len(flagged)} task(s) don't separate the models: "
               + ", ".join(f"{s['task']} ({s['verdict']})" for s in flagged))
-    for i, p in enumerate(summary["models"], 1):
-        if not p["empty"]:
-            lo, hi = p["ci90"]
-            he = f"  HE vs EN {p['he_vs_en']:+.2f}" if p.get("he_vs_en") is not None else ""
-            print(f"  {i}. {p['name']:<20} {p['overall']:.3f}  (90% CI {lo:.2f}–{hi:.2f}){he}")
+    print(format_scorecard(summary["comparison"], summary["scorecard"]))
     return 0
 
+
+def format_scorecard(c, rows) -> str:
+    """Every model with absolute percentages: fit for you, general quality, reliability."""
+    def pct(x, ci=None):
+        if x is None:
+            return "   –   "
+        return f"{100 * x:>3.0f}%" + (f" ±{50 * (ci[1] - ci[0]):<2.0f}" if ci else "")
+
+    lines = [f"  note: {n}" for n in c.notes]
+    lines += ["", f"  Best for you:   {c.for_you.verdict}", f"  Best in general: {c.general.verdict}", "",
+              f"  {'#':>2}  {'model':<26} {'fit for you':<12} {'general':<12} {'reliability'}"]
+    for i, r in enumerate(rows, 1):
+        mark = "*" if r.leader_fit else " "
+        rel = f"{pct(r.reliability)} ({r.usable}/{r.attempts}" + (f", {r.errors} err)" if r.errors else ")") \
+            if r.reliability is not None else "   –"
+        lines.append(f" {mark}{i:>2}  {r.name:<26} {pct(r.fit, r.fit_ci):<12} {pct(r.general, r.general_ci):<12} {rel}")
+    lines += ["  fit = your category weights · general = categories equal · ± = 90% margin",
+              "  reliability = attempts (errors included) with a usable answer (score >= 80%) · * = top group for you"]
+    return "\n".join(lines)
 
 def _serve(args: argparse.Namespace) -> int:
     try:
