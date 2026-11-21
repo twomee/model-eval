@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .config import Config, ModelSpec, Task
-from .graders import GradingContext, grade
+from .graders import GradingContext, grade, incomplete_grade
 from .limits import Limits
 from .providers import AnswerPending, Provider, ProviderError, Request, make_provider, manual_paths
 
@@ -151,7 +151,11 @@ async def grade_all(cfg: Config, tasks: list[Task], run_dir: Path, regrade: bool
     if regrade and grades_path.exists():
         grades_path.unlink()
     out = _Appender(grades_path)
-    graded = {r["key"] for r in read_jsonl(grades_path) if r.get("score") is not None}
+    latest: dict[str, dict[str, Any]] = {}
+    for r in read_jsonl(grades_path):
+        latest[r["key"]] = r                    # a regrade appends; the last record counts
+    # Graded = has a score AND a complete judge panel (a quota-cut panel is regraded).
+    graded = {k for k, r in latest.items() if r.get("score") is not None and not incomplete_grade(r)}
     by_id = {t.id: t for t in tasks}
 
     judges = []
@@ -171,6 +175,10 @@ async def grade_all(cfg: Config, tasks: list[Task], run_dir: Path, regrade: bool
     async def run_one(g: dict[str, Any]) -> None:
         async with sem:
             score, parts = await grade(by_id[g["task_id"]], g["output"], ctx)
+        if deferred := next((p.details["deferred"] for p in parts if p.details.get("deferred")), None):
+            # Not written: stays ungraded, so the next run grades it with the full judge panel.
+            progress.item("grade", g["model"], g["task_id"], g["rep"], f"deferred ({deferred})", False)
+            return
         await out.write({"key": g["key"], "model": g["model"], "task_id": g["task_id"],
                          "category": g["category"], "rep": g["rep"], "score": score,
                          "parts": [asdict(p) for p in parts]})

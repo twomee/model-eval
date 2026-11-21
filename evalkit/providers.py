@@ -48,10 +48,23 @@ class Completion:
     cost_usd: float | None = None
 
 
+# A subscription that ran out of its usage allowance. Not a hiccup: it resets in hours, so retrying
+# (codex says "try again at 9:15 PM", which also matches the retry pattern) just burns minutes of
+# backoff per call. Seen in a real run: grading crawled at ~1 answer per 2.5 min this way.
+_QUOTA = re.compile(r"usage limit|hit your (usage )?limit|purchase more credits|requires usage credits|"
+                    r"out of (credits|quota)|quota (exceeded|exhausted)|insufficient (credits|quota)|"
+                    r"resource.?exhausted", re.I)
+
+
+def is_quota_message(msg: str) -> bool:
+    return bool(_QUOTA.search(msg))
+
+
 class ProviderError(Exception):
-    def __init__(self, msg: str, retryable: bool = False):
+    def __init__(self, msg: str, retryable: bool = False, quota: bool | None = None):
         super().__init__(msg)
-        self.retryable = retryable
+        self.quota = is_quota_message(msg) if quota is None else quota
+        self.retryable = retryable and not self.quota   # a quota error is never retried
 
 
 class AnswerPending(Exception):
