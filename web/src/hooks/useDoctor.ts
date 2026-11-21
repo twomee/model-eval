@@ -24,8 +24,8 @@ export function useDoctor(client: Pick<Api, 'runDoctor'>): DoctorState {
       setError(null)
       setPending((p) => new Set([...p, ...names]))
       try {
-        // all=true sends [] so the SERVER decides what "everything" is (it re-reads config).
-        const res = await client.runDoctor(opts.all ? [] : names)
+        // Always explicit names: the server treats [] as "defaults only", which isn't what "Check all" means.
+        const res = await client.runDoctor(names)
         setResults((prev) => {
           const next = { ...prev }
           for (const c of res.checks) next[c.name] = c

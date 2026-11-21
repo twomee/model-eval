@@ -39,9 +39,28 @@ def test_substitutes_in_params_for_api_providers():
     assert expand_variants(e)[0]["params"] == {"reasoning_effort": "high"}
 
 
-def test_no_variants_passes_through_unchanged():
+def test_no_variants_is_its_own_family_and_a_default():
     e = {"name": "plain", "provider": "cli", "command": ["claude", "-p"]}
-    assert expand_variants(e) == [e]
+    assert expand_variants(e) == [{**e, "family": "plain", "default": True}]
+
+
+def test_defaults_mark_which_variants_a_plain_run_uses():
+    out = expand_variants(entry(variants={"effort": ["low", "medium", "high"]}, defaults={"effort": ["medium"]}))
+    assert {v["name"]: v["default"] for v in out} == {"gpt-low": False, "gpt-medium": True, "gpt-high": False}
+    assert {v["family"] for v in out} == {"gpt"} and all("defaults" not in v for v in out)
+
+
+def test_without_defaults_every_variant_is_default():
+    assert all(v["default"] for v in expand_variants(entry(variants={"effort": ["low", "high"]})))
+
+
+@pytest.mark.parametrize("defaults,msg", [
+    ({"effort": ["ultra"]}, "not in variants"),
+    ({"temp": [1]}, "not a variant key"),
+])
+def test_defaults_errors(defaults, msg):
+    with pytest.raises(ValueError, match=msg):
+        expand_variants(entry(variants={"effort": ["low"]}, defaults=defaults))
 
 
 @pytest.mark.parametrize("bad,msg", [

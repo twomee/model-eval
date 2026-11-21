@@ -49,3 +49,63 @@ class DoctorOut(BaseModel):
 
 class ErrorOut(BaseModel):
     detail: str
+
+
+# ---------------------------------------------------------------- run planner
+
+RUN_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"  # becomes results/<run>/: no "/", no ".."
+
+
+class VariantOut(BaseModel):
+    name: str
+    effort: str | None
+    default: bool
+
+
+class FamilyOut(BaseModel):
+    family: str
+    subscription: str
+    provider: str
+    model_id: str | None = Field(description="model id of the first variant, for display")
+    variants: list[VariantOut]
+
+
+class CategoryOut(BaseModel):
+    name: str
+    n_tasks: int
+    n_rubric: int
+
+
+class PlanOptionsOut(BaseModel):
+    families: list[FamilyOut]
+    categories: list[CategoryOut]
+    repetitions: int
+    judges: list[ModelOut]
+
+
+class EstimateIn(BaseModel):
+    models: list[str] = Field(min_length=1, max_length=500)
+    categories: list[str] = Field(default_factory=list, max_length=50)  # empty = all
+    repetitions: int | None = Field(default=None, ge=1, le=20)
+    run_name: str = Field(default="v1", pattern=RUN_NAME_PATTERN)
+
+
+class SubscriptionCostOut(BaseModel):
+    subscription: str
+    generation_calls: int
+    judge_calls: int
+    total_calls: int
+    est_input_tokens: int
+    est_output_tokens: int
+    models_without_history: int
+
+
+class EstimateOut(BaseModel):
+    n_competitors: int
+    n_tasks: int
+    n_rubric_tasks: int
+    repetitions: int
+    total_calls: int
+    subscriptions: list[SubscriptionCostOut]
+    notes: list[str]
+    command: str

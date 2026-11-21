@@ -24,9 +24,12 @@ function fakeClient(overrides: Partial<Api> = {}): Api {
           detail: m.name === 'gpt-sol' ? 'exit 1: model not supported' : '3.1s' })),
         all_ok: false,
         judge_vendors: ['claude'],
-        warnings: names.length ? [] : ['Working judges cover 1 vendor(s).'],
+        // like the server: the vendor warning needs the whole judge panel in the check
+        warnings: names.includes('judge-claude') ? ['Working judges cover 1 vendor(s).'] : [],
       }
     }),
+    planOptions: vi.fn(),
+    estimate: vi.fn(),
     ...overrides,
   }
 }
@@ -53,9 +56,9 @@ describe('ModelsPage', () => {
   it('check all: shows per-row status, a failure summary, and the vendor warning', async () => {
     const client = fakeClient()
     render(<ModelsPage client={client} />)
-    await userEvent.click(await screen.findByRole('button', { name: 'Check all' }))
+    await userEvent.click(await screen.findByRole('button', { name: /Check all/ }))
 
-    expect(client.runDoctor).toHaveBeenCalledWith([]) // server decides what "all" is
+    expect(client.runDoctor).toHaveBeenCalledWith(['claude-opus', 'gpt-sol', 'judge-claude'])
     await waitFor(() => expect(within(row('gpt-sol')).getByText('failed')).toBeInTheDocument())
     expect(within(row('gpt-sol')).getByText(/model not supported/)).toBeInTheDocument()
     expect(within(row('claude-opus')).getByText('OK')).toBeInTheDocument()
@@ -89,7 +92,7 @@ describe('ModelsPage', () => {
   it('shows a doctor request failure instead of failing silently', async () => {
     const client = fakeClient({ runDoctor: vi.fn(async () => { throw new Error('Cannot reach the evalkit server') }) })
     render(<ModelsPage client={client} />)
-    await userEvent.click(await screen.findByRole('button', { name: 'Check all' }))
+    await userEvent.click(await screen.findByRole('button', { name: /Check all/ }))
     expect(await screen.findByRole('alert')).toHaveTextContent('Cannot reach the evalkit server')
   })
 

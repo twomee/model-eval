@@ -82,11 +82,7 @@ def judge_vendors(cfg: Config, checks: list[Check]) -> set[str]:
 
 
 def vendor_of(spec: ModelSpec) -> str:
-    if spec.provider == "cli" and spec.command:
-        return {"codex": "openai", "agy": "google"}.get(spec.command[0], spec.command[0])
-    if spec.provider == "anthropic":
-        return "anthropic"
-    return spec.base_url or spec.provider
+    return spec.subscription
 
 
 def format_report(cfg: Config, checks: list[Check]) -> tuple[str, bool]:

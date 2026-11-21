@@ -17,8 +17,9 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from .routes import models
+from .routes import models, plan
 from .services.models_service import ModelsService
+from .services.plan_service import PlanService
 
 WEB_DIST = Path(__file__).parent.parent / "web"  # `npm run build` in web/ writes here
 LOCAL_HOSTS = ["127.0.0.1", "localhost", "[::1]"]
@@ -27,6 +28,7 @@ LOCAL_HOSTS = ["127.0.0.1", "localhost", "[::1]"]
 def create_app(config_path: Path, tasks_dir: Path, allowed_hosts: list[str] | None = None) -> FastAPI:
     app = FastAPI(title="evalkit", version="0.3.0", docs_url="/api/docs", openapi_url="/api/openapi.json")
     app.state.models_service = ModelsService(config_path=config_path, tasks_dir=tasks_dir)
+    app.state.plan_service = PlanService(config_path=config_path, tasks_dir=tasks_dir)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts or LOCAL_HOSTS)
 
     @app.middleware("http")
@@ -42,6 +44,7 @@ def create_app(config_path: Path, tasks_dir: Path, allowed_hosts: list[str] | No
         return {"status": "ok"}
 
     app.include_router(models.router)
+    app.include_router(plan.router)
     _mount_frontend(app)
     return app
 

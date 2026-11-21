@@ -9,6 +9,10 @@ One config entry can stand for several competitors:
 expands to `gpt-sol-low` and `gpt-sol-high`, each with {effort} substituted in command,
 model and params. Several keys expand to their cartesian product.
 
+`variants` lists what EXISTS; optional `defaults: {effort: [medium]}` lists what a plain
+`run` uses. Keeping the two apart lets the UI offer every effort without a bare `run`
+quietly spending quota on all of them. Without `defaults`, every variant is a default.
+
 Design choices:
   * Every variant gets a suffix, even with a single value. Results are keyed by name, so
     turning [medium] into [medium, high] later must not rename the medium results.
@@ -63,7 +67,9 @@ def expand_variants(entry: dict[str, Any]) -> list[dict[str, Any]]:
     if not variants:
         if used:
             raise ValueError(f"model {name}: placeholders {sorted(used)} but no `variants` to fill them")
-        return [entry]
+        if "defaults" in entry:
+            raise ValueError(f"model {name}: `defaults` without `variants`")
+        return [{**entry, "family": name, "default": True}]
     if not isinstance(variants, dict) or not all(isinstance(v, list) and v for v in variants.values()):
         raise ValueError(f"model {name}: `variants` must map each key to a non-empty list")
     if unused := set(variants) - used:
@@ -72,11 +78,22 @@ def expand_variants(entry: dict[str, Any]) -> list[dict[str, Any]]:
     if missing := used - set(variants):
         raise ValueError(f"model {name}: placeholders {sorted(missing)} have no values in `variants`")
 
+    defaults = entry.get("defaults") or {}
+    if not isinstance(defaults, dict):
+        raise ValueError(f"model {name}: `defaults` must map variant keys to lists")
+    for k, vals in defaults.items():
+        if k not in variants:
+            raise ValueError(f"model {name}: defaults key {k!r} is not a variant key")
+        if bad := [v for v in vals if v not in variants[k]]:
+            raise ValueError(f"model {name}: defaults {k}={bad} not in variants {variants[k]}")
+
     keys = list(variants)
     out = []
     for combo in itertools.product(*(variants[k] for k in keys)):
         subs = dict(zip(keys, map(str, combo)))
-        e = {k: v for k, v in entry.items() if k != "variants"}
+        e = {k: v for k, v in entry.items() if k not in ("variants", "defaults")}
+        e["family"] = name
+        e["default"] = all(subs[k] in map(str, defaults[k]) for k in defaults)
         for f in _SUBSTITUTED_FIELDS:
             if f in e:
                 e[f] = _substitute(e[f], subs)

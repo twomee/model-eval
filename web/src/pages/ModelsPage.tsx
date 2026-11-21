@@ -33,7 +33,7 @@ export function ModelsPage({ client }: Props) {
       <div className="toolbar">
         <button type="button" className="primary" disabled={anyPending}
           onClick={() => doctor.run(all.map((m) => m.name), { all: true })}>
-          {anyPending ? 'Checking…' : 'Check all'}
+          {anyPending ? 'Checking…' : `Check all (${all.length} calls)`}
         </button>
         <button type="button" onClick={models.reload} disabled={models.loading}>
           Reload config

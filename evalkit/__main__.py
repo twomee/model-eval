@@ -11,12 +11,14 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import asyncio
 import shutil
 import sys
 from pathlib import Path
 
-from .config import load_config, load_tasks
+from .config import ModelSpec, load_config, load_tasks
+from .estimate import Estimate, estimate
 from .doctor import format_report, run_doctor
 from .report import build_summary, write_csv, write_html
 from .runner import export_manual, generate, grade_all
@@ -26,13 +28,41 @@ def _csv(s: str | None) -> set[str] | None:
     return {x.strip() for x in s.split(",") if x.strip()} if s else None
 
 
+def select_models(all_models: list[ModelSpec], names: set[str] | None) -> list[ModelSpec]:
+    """No names -> the defaults. 'all' -> everything. A family name -> all of its variants."""
+    if not names:
+        return [m for m in all_models if m.default]
+    if names == {"all"}:
+        return list(all_models)
+    known = {m.name for m in all_models} | {m.family for m in all_models}
+    if unknown := names - known:
+        raise ValueError(f"unknown models: {sorted(unknown)}")
+    return [m for m in all_models if m.name in names or m.family in names]
+
+
+def format_estimate(est: Estimate) -> str:
+    lines = [f"{len(est.models)} competitors x {est.n_tasks} tasks x {est.repetitions} reps "
+             f"({est.n_rubric_tasks} rubric-graded -> also sent to each judge)", "",
+             f"{'subscription':<16}{'answers':>9}{'judging':>9}{'total':>8}   est. tokens in/out"]
+    for s in est.subscriptions:
+        tok = f"{s.est_input_tokens:,} / {s.est_output_tokens:,}" if s.est_input_tokens else "-"
+        if s.models_without_history:
+            tok += f"  (+{s.models_without_history} competitor(s) with no history)"
+        lines.append(f"{s.subscription:<16}{s.generation_calls:>9}{s.judge_calls:>9}{s.total_calls:>8}   {tok}")
+    lines.append(f"{'TOTAL':<16}{'':>18}{est.total_calls:>8}")
+    return "\n".join(lines + [""] + est.notes)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="evalkit")
     ap.add_argument("command", choices=["run", "grade", "report", "export", "validate", "doctor", "serve"])
     ap.add_argument("--config", default="config.yaml", type=Path)
     ap.add_argument("--tasks-dir", default="tasks", type=Path)
     ap.add_argument("--run", default="default", help="run name; results go to results/<run>/")
-    ap.add_argument("--models", help="comma-separated subset of model names")
+    ap.add_argument("--models", help="comma-separated competitor names or families (gpt-sol = all its efforts), "
+                                     "or 'all'. Default: the `defaults` variants only")
+    ap.add_argument("--repetitions", type=int, help="override run.repetitions (manual is always 1)")
+    ap.add_argument("--dry-run", action="store_true", help="run: print calls per subscription, call nothing")
     ap.add_argument("--tasks", help="comma-separated subset of task ids")
     ap.add_argument("--category", help="comma-separated subset of categories")
     ap.add_argument("--regrade", action="store_true", help="discard existing grades and re-grade")
@@ -51,13 +81,19 @@ def main(argv: list[str] | None = None) -> int:
         tasks = [t for t in tasks if t.id in ids]
     if (cats := _csv(args.category)):
         tasks = [t for t in tasks if t.category in cats]
-    models = cfg.models
-    if (names := _csv(args.models)):
-        unknown = names - {m.name for m in models}
-        if unknown:
-            ap.error(f"unknown models: {unknown}")
-        models = [m for m in models if m.name in names]
+    if args.repetitions is not None:
+        if args.repetitions < 1:
+            ap.error("--repetitions must be >= 1")
+        cfg = replace(cfg, run=replace(cfg.run, repetitions=args.repetitions))
+    try:
+        models = select_models(cfg.models, _csv(args.models))
+    except ValueError as e:
+        ap.error(str(e))
     run_dir = Path("results") / args.run
+
+    if args.command == "run" and args.dry_run:
+        print(format_estimate(estimate(cfg, tasks, models)))
+        return 0
 
     if args.command == "validate":
         print(f"config OK: {len(cfg.models)} models, {len(cfg.judges)} judges")
