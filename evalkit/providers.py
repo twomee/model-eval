@@ -151,6 +151,10 @@ class CliProvider:
     `command` is argv (no shell -> no injection). If an arg contains "{prompt}" it is
     substituted; otherwise the prompt goes to stdin. Runs in an empty temp dir so an
     agentic CLI can't touch your files.
+
+    `isolated_home` points the CLI's home dir (e.g. CODEX_HOME) at a clean directory that
+    contains only symlinks to the files it needs to log in. Some CLIs always load global
+    instructions from their home (codex: ~/.codex/AGENTS.md) and offer no flag to skip it.
     """
 
     def __init__(self, spec: ModelSpec, settings: RunSettings):
@@ -159,6 +163,7 @@ class CliProvider:
         if shutil.which(spec.command[0]) is None:  # fail fast: once per model, not once per call
             raise ProviderError(f"[{spec.name}] CLI not found on PATH: {spec.command[0]}")
         self.spec, self.settings = spec, settings
+        self.env = {**os.environ, **_prepare_isolated_home(spec)}
 
     async def complete(self, req: Request) -> Completion:
         full = f"{req.system}\n\n---\n\n{req.prompt}" if req.system else req.prompt
@@ -170,7 +175,7 @@ class CliProvider:
                 t0 = time.perf_counter()
                 try:
                     proc = await asyncio.create_subprocess_exec(
-                        *argv, cwd=cwd,
+                        *argv, cwd=cwd, env=self.env,
                         stdin=asyncio.subprocess.DEVNULL if uses_placeholder else asyncio.subprocess.PIPE,
                         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
                 except FileNotFoundError as e:
@@ -184,19 +189,48 @@ class CliProvider:
                     last_err = ProviderError("cli timeout", retryable=True)
                 else:
                     latency = time.perf_counter() - t0
+                    stdout = out.decode(errors="replace")
                     if proc.returncode == 0:
-                        return self._parse(out.decode(errors="replace"), latency)
-                    msg = _error_summary(err.decode(errors="replace"))
-                    last_err = ProviderError(f"exit {proc.returncode}: {msg}", _is_retryable(msg))
+                        return self._parse(stdout, latency)
+                    last_err = self._failure(proc.returncode, stdout, err.decode(errors="replace"))
             if not last_err.retryable:
                 break
             await asyncio.sleep(min(120, 5 * 2 ** attempt))
         raise last_err  # type: ignore[misc]
 
     def _parse(self, stdout: str, latency: float) -> Completion:
-        if self.spec.parse == "claude_json":
-            return parse_claude_json(stdout, latency)
-        return Completion(stdout.strip(), latency)
+        parser = _PARSERS.get(self.spec.parse)
+        if parser is None:
+            return Completion(stdout.strip(), latency)
+        return parser(stdout, latency)
+
+    def _failure(self, code: int, stdout: str, stderr: str) -> ProviderError:
+        # Structured-output CLIs (claude json, codex --json) exit 1 with the real error on
+        # STDOUT and an empty stderr. Let the parser find it; fall back to stderr.
+        if self.spec.parse in _PARSERS:
+            try:
+                self._parse(stdout, 0.0)
+            except ProviderError as e:
+                return ProviderError(f"exit {code}: {e}", e.retryable)
+        msg = _error_summary(stderr) or _error_summary(stdout)
+        return ProviderError(f"exit {code}: {msg}", _is_retryable(msg))
+
+
+def _prepare_isolated_home(spec: ModelSpec) -> dict[str, str]:
+    iso = spec.isolated_home
+    if not iso:
+        return {}
+    home = Path(iso["dir"]).expanduser()
+    home.mkdir(parents=True, exist_ok=True)
+    for src in map(lambda x: Path(x).expanduser(), iso.get("link", [])):
+        if not src.exists():
+            raise ProviderError(f"[{spec.name}] isolated_home: {src} missing (logged in to the CLI?)")
+        dst = home / src.name
+        # Symlink, not copy: the CLI refreshes tokens in place; a copy would go stale.
+        if not (dst.is_symlink() and dst.resolve() == src.resolve()):
+            dst.unlink(missing_ok=True)
+            dst.symlink_to(src)
+    return {iso["env"]: str(home)}
 
 
 _RETRYABLE = re.compile(r"rate.?limit|429|overloaded|try again|temporarily unavailable", re.I)
@@ -235,6 +269,37 @@ def parse_claude_json(stdout: str, latency: float) -> Completion:
     tokens_in = sum(p for p in parts if p) if any(p is not None for p in parts) else None
     return Completion(data.get("result", ""), latency, tokens_in, usage.get("output_tokens"),
                       cost_usd=data.get("total_cost_usd"))
+
+
+def parse_codex_jsonl(stdout: str, latency: float) -> Completion:
+    """`codex exec --json` -> Completion. One JSON event per line; the answer is the last
+    `agent_message`, usage arrives in `turn.completed`, failures as `error` / `turn.failed`.
+    OpenAI's input_tokens already INCLUDES cached tokens (unlike Anthropic's)."""
+    text, usage, errors = None, {}, []
+    for line in stdout.splitlines():
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue  # codex may interleave non-JSON log lines
+        kind = ev.get("type")
+        item = ev.get("item") or {}
+        if kind == "item.completed" and item.get("type") == "agent_message":
+            text = item.get("text", "")
+        elif kind == "turn.completed":
+            usage = ev.get("usage") or {}
+        elif kind == "turn.failed":
+            errors.append((ev.get("error") or {}).get("message", "turn failed"))
+        elif kind == "error":
+            errors.append(ev.get("message", "error"))
+    if errors and text is None:
+        msg = errors[-1]
+        raise ProviderError(f"codex error: {msg}", retryable=_is_retryable(msg))
+    if text is None:
+        raise ProviderError(f"codex: no agent_message in output: {stdout[-300:]!r}")
+    return Completion(text, latency, usage.get("input_tokens"), usage.get("output_tokens"))
+
+
+_PARSERS = {"claude_json": parse_claude_json, "codex_jsonl": parse_codex_jsonl}
 
 
 # --------------------------------------------------------------------------- Manual (copy/paste)

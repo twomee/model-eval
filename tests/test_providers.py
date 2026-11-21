@@ -9,7 +9,8 @@ import pytest
 
 from evalkit.config import Config, ModelSpec, RunSettings, load_config
 from evalkit.doctor import format_report, run_doctor
-from evalkit.providers import ProviderError, _error_summary, _is_retryable, parse_claude_json
+from evalkit.providers import (CliProvider, ProviderError, Request, _error_summary, _is_retryable,
+                               parse_claude_json, parse_codex_jsonl)
 
 ROOT = Path(__file__).parent.parent
 
@@ -95,3 +96,77 @@ def test_doctor_reports_missing_cli_and_manual_progress(tmp_path, monkeypatch):
     assert checks["paste"].ok and "1/2" in checks["paste"].detail
     _, ok = format_report(cfg, list(checks.values()))
     assert not ok
+
+
+# ---------------------------------------------------------------- codex_jsonl
+
+def _codex(*events) -> str:
+    return "\n".join(json.dumps(e) for e in events)
+
+
+def test_codex_jsonl_takes_last_agent_message_and_usage():
+    out = _codex({"type": "thread.started"},
+                 {"type": "item.completed", "item": {"type": "error", "message": "metadata warning"}},
+                 {"type": "item.completed", "item": {"type": "agent_message", "text": "draft"}},
+                 {"type": "item.completed", "item": {"type": "agent_message", "text": "final"}},
+                 {"type": "turn.completed", "usage": {"input_tokens": 17592, "cached_input_tokens": 13952,
+                                                      "output_tokens": 5}})
+    c = parse_codex_jsonl(out + "\nnot json log line", 2.0)
+    assert c.text == "final" and c.input_tokens == 17592 and c.output_tokens == 5
+
+
+def test_codex_jsonl_turn_failed_is_permanent_error():
+    out = _codex({"type": "error", "message": "The 'x' model is not supported"},
+                 {"type": "turn.failed", "error": {"message": "The 'x' model is not supported"}})
+    with pytest.raises(ProviderError, match="not supported") as ei:
+        parse_codex_jsonl(out, 1.0)
+    assert not ei.value.retryable
+
+
+# ---------------------------------------------------------------- CliProvider end-to-end with a fake CLI
+
+def _fake_cli(tmp_path: Path, script: str) -> str:
+    exe = tmp_path / "fakecli"
+    exe.write_text("#!/bin/sh\n" + script, encoding="utf-8")
+    exe.chmod(0o755)
+    return str(exe)
+
+
+def test_cli_nonzero_exit_reports_error_from_stdout(tmp_path):
+    # claude -p --output-format json exits 1 with the reason on STDOUT and empty stderr
+    exe = _fake_cli(tmp_path, """echo '{"is_error": true, "result": "requires usage credits"}'; exit 1""")
+    spec = ModelSpec(name="c", provider="cli", command=(exe,), parse="claude_json")
+    with pytest.raises(ProviderError, match="requires usage credits") as ei:
+        asyncio.run(CliProvider(spec, RunSettings(max_retries=0)).complete(Request(prompt="hi")))
+    assert not ei.value.retryable
+
+
+def test_cli_isolated_home_sets_env_and_symlinks_login(tmp_path):
+    login = tmp_path / "real" / "auth.json"
+    login.parent.mkdir()
+    login.write_text("{}", encoding="utf-8")
+    home = tmp_path / "iso"
+    exe = _fake_cli(tmp_path, 'echo "$FAKE_HOME"; ls "$FAKE_HOME"')
+    spec = ModelSpec(name="c", provider="cli", command=(exe, "{prompt}"),
+                     isolated_home={"env": "FAKE_HOME", "dir": str(home), "link": [str(login)]})
+    out = asyncio.run(CliProvider(spec, RunSettings()).complete(Request(prompt="hi"))).text
+    assert str(home) in out and "auth.json" in out
+    assert (home / "auth.json").is_symlink() and (home / "auth.json").resolve() == login.resolve()
+
+
+def test_cli_isolated_home_missing_login_fails_fast(tmp_path):
+    spec = ModelSpec(name="c", provider="cli", command=("sh",),
+                     isolated_home={"env": "X", "dir": str(tmp_path / "h"), "link": [str(tmp_path / "nope.json")]})
+    with pytest.raises(ProviderError, match="missing"):
+        CliProvider(spec, RunSettings())
+
+
+@pytest.mark.parametrize("spec,expected", [
+    (ModelSpec(name="a", provider="anthropic", model="claude-x"), "claude-x"),
+    (ModelSpec(name="c", provider="cli", command=("claude", "-p", "--model", "claude-y")), "claude-y"),
+    (ModelSpec(name="x", provider="cli", command=("codex", "exec", "-m", "gpt-z", "{prompt}")), "gpt-z"),
+    (ModelSpec(name="u", provider="cli", command=("gemini", "-p", "{prompt}")), None),  # unpinned
+    (ModelSpec(name="t", provider="cli", command=("codex", "-m")), None),               # dangling flag
+])
+def test_model_id(spec, expected):
+    assert spec.model_id == expected

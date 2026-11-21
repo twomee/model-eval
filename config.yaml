@@ -8,11 +8,12 @@
 #
 # CLI flags change between versions: verify each command with `<cli> --help` before the first run,
 # then run `python -m evalkit doctor` (one trivial call per model/judge, fails in seconds).
-# Last verified 2026-11-21: claude 2.1.330, codex 0.128.0 (BROKEN, needs >= 0.171), gemini not installed.
+# Last verified 2026-11-21: claude 2.1.330, codex 0.171.0. Gemini CLI: no individual-subscription
+# login, so gemini is manual (Gemini app) or API (AI Studio key) below.
 #
 # ISOLATION: a CLI is an agent wrapped around a model. By default it loads your personal setup
-# (claude: ~/.claude/CLAUDE.md, plugins, MCP, ~30k tokens of tools; codex: ~/.codex/config.toml,
-# which here pins a model and runs with sandbox=danger-full-access). That changes the ANSWERS,
+# (claude: ~/.claude/CLAUDE.md, plugins, MCP, ~30k tokens of tools; codex: ~/.codex/AGENTS.md and
+# config.toml with sandbox=danger-full-access). That changes the ANSWERS,
 # so the flags below strip it, and pin the model so results stay comparable across CLI updates.
 
 run:
@@ -55,22 +56,29 @@ models:
   #             "--no-session-persistence", "--model", "claude-fable-5-2"]
   #   parse: claude_json
 
-  - name: chatgpt-codex
+  # codex: --ignore-user-config does NOT skip ~/.codex/AGENTS.md, so `isolated_home` runs it with a
+  # clean CODEX_HOME holding only a symlink to your login. -s read-only: can't write anywhere.
+  # Models on a ChatGPT plan: see ~/.codex/models_cache.json (gpt-6.2-sol is the CLI default).
+  - name: gpt-sol
     provider: cli
-    # --skip-git-repo-check: we run in an empty temp dir.  --ignore-user-config: don't inherit
-    # your model/sandbox settings.  -s read-only: model can't write anywhere.  --ephemeral: no session files.
-    # codex 0.128 fails here (can't parse the server's model list; gpt-5.5 rejected for ChatGPT accounts):
-    #   npm i -g @openai/codex@latest   then pin the model: add "-m", "<id>" before "{prompt}".
-    command: ["codex", "exec", "--skip-git-repo-check", "--ignore-user-config", "--ephemeral",
-              "-s", "read-only", "{prompt}"]
+    command: ["codex", "exec", "--skip-git-repo-check", "--ephemeral", "-s", "read-only", "--json",
+              "-m", "gpt-6.2-sol", "{prompt}"]
+    parse: codex_jsonl
+    isolated_home: &codex_home {env: CODEX_HOME, dir: ~/.cache/evalkit/codex-home, link: [~/.codex/auth.json]}
 
-  - name: gemini
+  - name: gpt-astra
     provider: cli
-    # NOT INSTALLED on this machine (npm i -g @google/gemini-cli). Flags unverified: check
-    # `gemini --help` for model pinning (-m) and for skipping user settings / tools before the first run.
-    command: ["gemini", "-p", "{prompt}"]
+    command: ["codex", "exec", "--skip-git-repo-check", "--ephemeral", "-s", "read-only", "--json",
+              "-m", "gpt-6.2-astra", "{prompt}"]
+    parse: codex_jsonl
+    isolated_home: *codex_home
 
   # ---------- subscriptions without a CLI: copy/paste ----------
+  # Gemini CLI has no individual-subscription login. Paste into the Gemini app, or use the
+  # free-tier API (gemini-api below) - which is automated and repeatable, so prefer it if you can.
+  - name: gemini
+    provider: manual
+
   - name: mistral-lechat
     provider: manual
 
@@ -111,17 +119,15 @@ models:
 # Judge disagreement is shown per answer in the report.
 #
 # Only judges that actually WORK count: `doctor` warns when they cover fewer than 2 vendors.
-# Until gemini is installed, uncomment judge-codex (after upgrading codex) as the second vendor.
 judges:
   - name: judge-claude
     provider: cli
     command: ["claude", "-p", "--output-format", "json", "--safe-mode", "--tools", "",
               "--no-session-persistence", "--model", "claude-opus-5-5"]
     parse: claude_json
-  # - name: judge-codex
-  #   provider: cli
-  #   command: ["codex", "exec", "--skip-git-repo-check", "--ignore-user-config", "--ephemeral",
-  #             "-s", "read-only", "{prompt}"]
-  - name: judge-gemini
+  - name: judge-gpt
     provider: cli
-    command: ["gemini", "-p", "{prompt}"]
+    command: ["codex", "exec", "--skip-git-repo-check", "--ephemeral", "-s", "read-only", "--json",
+              "-m", "gpt-6.2-sol", "{prompt}"]
+    parse: codex_jsonl
+    isolated_home: *codex_home
