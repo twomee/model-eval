@@ -145,12 +145,23 @@ def main(argv: list[str] | None = None) -> int:
     if flagged:
         print(f"  ! {len(flagged)} task(s) don't separate the models: "
               + ", ".join(f"{s['task']} ({s['verdict']})" for s in flagged))
-    for i, p in enumerate(summary["models"], 1):
-        if not p["empty"]:
-            lo, hi = p["ci90"]
-            he = f"  HE vs EN {p['he_vs_en']:+.2f}" if p.get("he_vs_en") is not None else ""
-            print(f"  {i}. {p['name']:<20} {p['overall']:.3f}  (90% CI {lo:.2f}–{hi:.2f}){he}")
+    print(format_comparison(summary["comparison"]))
     return 0
+
+
+def format_comparison(c, top: int = 8) -> str:
+    """Both rankings side by side in the terminal: best for you, best in general."""
+    lines = [f"  note: {n}" for n in c.notes]
+    for r in (c.for_you, c.general):
+        title = "BEST FOR YOU (your category_weights)" if r is c.for_you else "BEST IN GENERAL (categories equal)"
+        lines += ["", title, f"  {r.verdict}"]
+        for i, m in enumerate(r.models[:top], 1):
+            mark = "*" if m.name in r.leaders else " "
+            lines.append(f" {mark}{i:>2}. {m.name:<26} {m.score:.3f}  (90% CI {m.ci90[0]:.2f}–{m.ci90[1]:.2f})")
+        if len(r.models) > top:
+            lines.append(f"     … {len(r.models) - top} more in the report")
+    lines.append("  * = in the leading group (not clearly beaten by #1)")
+    return "\n".join(lines)
 
 
 def _serve(args: argparse.Namespace) -> int:

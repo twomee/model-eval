@@ -18,9 +18,10 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from ..config import ConfigError
-from .routes import models, plan
+from .routes import models, plan, results
 from .services.models_service import ModelsService
 from .services.plan_service import PlanService
+from .services.results_service import ResultsService
 
 WEB_DIST = Path(__file__).parent.parent / "web"  # `npm run build` in web/ writes here
 LOCAL_HOSTS = ["127.0.0.1", "localhost", "[::1]"]
@@ -30,6 +31,7 @@ def create_app(config_path: Path, tasks_dir: Path, allowed_hosts: list[str] | No
     app = FastAPI(title="evalkit", version="0.3.0", docs_url="/api/docs", openapi_url="/api/openapi.json")
     app.state.models_service = ModelsService(config_path=config_path, tasks_dir=tasks_dir)
     app.state.plan_service = PlanService(config_path=config_path, tasks_dir=tasks_dir)
+    app.state.results_service = ResultsService(config_path=config_path, tasks_dir=tasks_dir)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts or LOCAL_HOSTS)
 
     @app.middleware("http")
@@ -52,6 +54,7 @@ def create_app(config_path: Path, tasks_dir: Path, allowed_hosts: list[str] | No
 
     app.include_router(models.router)
     app.include_router(plan.router)
+    app.include_router(results.router)
     _mount_frontend(app)
     return app
 

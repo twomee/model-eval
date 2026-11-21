@@ -30,6 +30,8 @@ function fakeClient(overrides: Partial<Api> = {}): Api {
     }),
     planOptions: vi.fn(),
     estimate: vi.fn(),
+    listRuns: vi.fn(),
+    comparison: vi.fn(),
     ...overrides,
   }
 }

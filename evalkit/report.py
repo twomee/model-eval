@@ -16,6 +16,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from .compare import Comparison, Ranking, compare
 from .config import Config, Task
 from .runner import read_jsonl
 
@@ -81,6 +82,7 @@ def build_summary(cfg: Config, run_dir: Path, tasks: list[Task] | None = None) -
             pairs[t.pair][t.lang] = t.id
 
     per_model: dict[str, dict[str, Any]] = {}
+    means_by_model: dict[str, dict[str, float]] = {}
     matrix: dict[str, dict[str, float]] = defaultdict(dict)   # task -> model -> mean score
     for spec in cfg.models:
         m = spec.name
@@ -96,6 +98,7 @@ def build_summary(cfg: Config, run_dir: Path, tasks: list[Task] | None = None) -
             per_model[m] = {"name": m, "provider": spec.provider, "empty": True, "errors": len(g_err)}
             continue
         task_means = {t: st.mean(v) for t, v in scores_by_task.items()}
+        means_by_model[m] = task_means
         for t, s in task_means.items():
             matrix[t][m] = s
         cat_scores = {}
@@ -124,7 +127,8 @@ def build_summary(cfg: Config, run_dir: Path, tasks: list[Task] | None = None) -
     ranked += [p for p in per_model.values() if p["empty"]]
     return {"models": ranked, "categories": categories, "matrix": matrix, "has_pairs": bool(pairs),
             "gens": gens, "grades": grades, "weights": cfg.category_weights,
-            "task_signal": task_signal(matrix)}
+            "task_signal": task_signal(matrix),
+            "comparison": compare(means_by_model, task_cat, cfg.category_weights)}
 
 
 EASY, BROKEN = 0.95, 0.05
@@ -233,6 +237,7 @@ def write_html(summary: dict[str, Any], path: Path) -> None:
                          f"{judge_notes}<pre dir='auto'>{e(gen['output'])}</pre></details>")
         drill.append(f"<h3>{e(t)}</h3>{''.join(items)}")
 
+    comparison_html = _comparison_html(summary["comparison"]) if summary.get("comparison") else ""
     signal = summary.get("task_signal") or []
     flagged = [s for s in signal if s["verdict"] != "separates"]
     signal_html = ""
@@ -254,12 +259,16 @@ def write_html(summary: dict[str, Any], path: Path) -> None:
  th{{background:#f5f5f5}} td.na{{color:#999}} pre{{white-space:pre-wrap;background:#fafafa;padding:.8rem;border:1px solid #eee;max-height:500px;overflow:auto}}
  details{{margin:.3rem 0}} summary{{cursor:pointer}} .j{{font-size:.85em;color:#444;margin:.2rem 0}}
  .note{{background:#fff8e1;border-left:4px solid #f0b400;padding:.6rem 1rem}} td.warn{{color:#b26a00;font-weight:600}}
+ .verdict{{font-size:1.05rem;padding:.7rem 1rem;border-left:4px solid #2e7d32;background:#f1f8f2;margin:.5rem 0}}
+ .verdict.tie{{border-color:#f0b400;background:#fff8e1}} .cols{{display:flex;gap:2rem;flex-wrap:wrap;align-items:flex-start}}
+ .lead td:first-child{{font-weight:700}}
 </style></head><body>
 <h1>Model eval report</h1>
 <p class="note"><b>How to read this:</b> overall = weighted mean of category means.
 CI = 90% bootstrap interval over tasks — if two models' intervals overlap a lot, the eval can't separate them yet.
 Inconsistency = mean std-dev across repetitions (lower = more predictable). HE vs EN = mean score change on the same task in Hebrew vs English (negative = the model gets worse in Hebrew).</p>
-<h2>Leaderboard</h2>
+{comparison_html}
+<h2>Leaderboard (for you)</h2>
 <table><tr><th>#</th><th>model</th><th>overall</th><th>CI 90%</th>{head}
 {he_head}<th>inconsistency</th><th>latency p50/p95</th><th>avg out tokens</th><th>cost</th><th>errors</th></tr>
 {''.join(rows)}</table>
@@ -269,3 +278,51 @@ Inconsistency = mean std-dev across repetitions (lower = more predictable). HE v
 <h2>Answers (rep 0)</h2>{''.join(drill)}
 </body></html>"""
     path.write_text(doc, encoding="utf-8")
+
+
+def _ranking_table(r: Ranking, leaders: set[str]) -> str:
+    e = html.escape
+    rows = "".join(
+        f"<tr class='{'lead' if m.name in leaders else ''}'><td>{i}</td><td>{e(m.name)}</td>{_cell(m.score)}"
+        f"<td><small>{m.ci90[0]:.2f}–{m.ci90[1]:.2f}</small></td><td>{m.n_tasks}</td></tr>"
+        for i, m in enumerate(r.models, 1))
+    return (f"<table><tr><th>#</th><th>model</th><th>score</th><th>CI 90%</th><th>tasks</th></tr>{rows}</table>")
+
+
+def _head_to_head(r: Ranking, top: int = 10) -> str:
+    e = html.escape
+    names = [m.name for m in r.models[:top]]
+    if len(names) < 2:
+        return ""
+
+    def cell(a: str, b: str) -> str:
+        if a == b:
+            return "<td class='na'>–</td>"
+        p = r.p_beats.get((a, b))
+        if p is None:
+            return "<td class='na'>?</td>"
+        hue = int(120 * p)  # red = row usually loses, green = row usually wins
+        return f"<td style='background:hsl({hue} 60% 88%)'>{p:.0%}</td>"
+
+    head = "".join(f"<th><small>{e(n)}</small></th>" for n in names)
+    body = "".join(f"<tr><th><small>{e(a)}</small></th>{''.join(cell(a, b) for b in names)}</tr>" for a in names)
+    return (f"<h3>Head-to-head ({e(r.label)}, top {len(names)})</h3><p class='note'>Cell = how often the ROW model "
+            f"scores higher than the COLUMN model on the same resampled tasks. &ge; 90% = clear, 75–90% = likely, "
+            f"closer to 50% = can't tell them apart.</p><table><tr><th></th>{head}</tr>{body}</table>")
+
+
+def _comparison_html(c: Comparison) -> str:
+    e = html.escape
+    weights = ", ".join(f"{k} {v:g}" for k, v in c.for_you.weights.items()) or "none set"
+
+    def block(r: Ranking, subtitle: str) -> str:
+        tie = " tie" if len(r.leaders) > 1 else ""
+        return (f"<div><h3>Best {e(r.label)}</h3><p class='muted'><small>{e(subtitle)}</small></p>"
+                f"<p class='verdict{tie}'>{e(r.verdict)}</p>{_ranking_table(r, set(r.leaders))}</div>")
+
+    notes = "".join(f"<p class='note'>{e(n)}</p>" for n in c.notes)
+    return ("<h2>Which model is best?</h2>" + notes + "<div class='cols'>"
+            + block(c.for_you, f"weighted by your category_weights: {weights}")
+            + block(c.general, "every category weighted equally")
+            + "</div>" + _head_to_head(c.for_you))
+

@@ -39,6 +39,8 @@ function fakeClient(overrides: Partial<Api> = {}): Api {
     runDoctor: vi.fn(),
     planOptions: vi.fn(async () => OPTIONS),
     estimate: vi.fn(async (req: EstimateRequest) => estimateFor(req)),
+    listRuns: vi.fn(),
+    comparison: vi.fn(),
     ...overrides,
   }
 }

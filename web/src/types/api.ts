@@ -88,3 +88,46 @@ export interface EstimateResponse {
   notes: string[]
   command: string
 }
+
+// ---------------------------------------------------------------- results / comparison
+
+export interface RunInfo {
+  name: string
+  has_report: boolean
+  n_answers: number
+  updated_at: number
+}
+
+export interface RankedModel {
+  name: string
+  score: number
+  ci_low: number
+  ci_high: number
+  n_tasks: number
+  leader: boolean
+}
+
+export interface Ranking {
+  label: string
+  weights: Record<string, number>
+  verdict: string
+  models: RankedModel[]
+  head_to_head_names: string[]
+  head_to_head: (number | null)[][]
+}
+
+export interface FlaggedTask {
+  task: string
+  verdict: string
+  min: number
+  max: number
+}
+
+export interface ComparisonResponse {
+  run: string
+  for_you: Ranking
+  general: Ranking
+  notes: string[]
+  flagged_tasks: FlaggedTask[]
+  report_url: string | null
+}
