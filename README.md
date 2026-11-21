@@ -27,7 +27,21 @@ python -m evalkit run --run smoke --tasks gen_capacity_estimate
 python -m evalkit run --run v1
 ```
 
-### Manual models (e.g. Mistral Le Chat, GLM)
+### Web UI (local, any OS)
+```bash
+cd web && npm ci && npm run build && cd ..   # once, and after UI changes (needs Node 20+)
+python -m evalkit serve                     # open http://localhost:8765
+```
+Currently: the **Models** screen: every competitor and judge, which model id actually runs, and a
+one-click health check (same as `doctor`). UI development: run `serve`, then `npm run dev` in `web/`
+(hot reload, proxies `/api` to the server).
+
+**Why a local server, not a hosted site:** models run through CLIs logged in on *your* machine;
+a remote server has neither your logins nor your machine. The server binds `127.0.0.1`, rejects
+foreign `Host` headers (DNS rebinding) and non-JSON writes (CSRF), because a request to it spends
+your subscription quota. `--host 0.0.0.0` exposes it to your network: there is no authentication.
+
+### Manual models (e.g. Gemini app, Mistral Le Chat, GLM)
 ```bash
 python -m evalkit export            # writes manual/<model>/<task>.prompt.md
 # paste each prompt into the chat UI, save the reply to <task>.answer.md in the same folder
@@ -52,6 +66,8 @@ tasks/*.yaml         what we test: prompt, reference, graders (twins_he.yaml = H
 tests/               harness unit tests + golden test over all tasks
 evalkit/
   doctor.py          preflight: one ping per model/judge, flags single-vendor judge panels
+  api/               FastAPI for the web UI: routes (HTTP) -> services (logic) -> core; schemas = API contract
+web/                 React + TS + Vite UI: services/api.ts -> hooks/ (state) -> components/ (rendering)
   providers.py       one adapter per vendor behind a single interface: complete(Request) -> Completion
                      anthropic | openai_compat | cli | manual | mock
   graders.py         python_tests, go_tests (execute tests) | match (regex) | length, language (constraints) | rubric (LLM-as-judge)
