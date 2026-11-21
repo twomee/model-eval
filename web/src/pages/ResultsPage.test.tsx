@@ -53,6 +53,7 @@ function fakeClient(overrides: Partial<Api> = {}): Api {
     listModels: vi.fn(), runDoctor: vi.fn(), planOptions: vi.fn(), estimate: vi.fn(),
     listRuns: vi.fn(async () => RUNS),
     comparison: vi.fn(async (run: string) => comparisonFor(run)),
+    startRun: vi.fn(), currentJob: vi.fn(async () => null), cancelRun: vi.fn(),
     ...overrides,
   }
 }
@@ -113,6 +114,19 @@ describe('ResultsPage scorecard', () => {
     expect(screen.queryByText(/Clear winner \(v2\)/)).not.toBeInTheDocument()
     expect(screen.getByText(/rankings are fragile/)).toBeInTheDocument()
     expect(screen.queryByRole('link', { name: /Open full report/ })).not.toBeInTheDocument()
+  })
+
+  it('"View results" deep link (#results/<run>) opens that run, not the newest', async () => {
+    window.location.hash = '#results/v1'
+    try {
+      const client = fakeClient()
+      render(<ResultsPage client={client} />)
+      expect(await screen.findByText(/Clear winner \(v1\)/)).toBeInTheDocument()
+      expect(client.comparison).toHaveBeenCalledWith('v1')
+      expect(screen.getByRole('combobox', { name: /Run/ })).toHaveValue('v1')
+    } finally {
+      window.location.hash = ''
+    }
   })
 
   it('lists tasks that do not separate the models', async () => {

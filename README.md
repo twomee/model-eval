@@ -57,8 +57,14 @@ model, or "All efforts, all models"), categories and repetitions; it gives you t
 cd web && npm ci && npm run build && cd ..   # once, and after UI changes (needs Node 20+)
 python -m evalkit serve                     # open http://localhost:8765
 ```
-Screens: **Models** (every competitor and judge, the model id and effort that actually run, one-click
-health checks, same as `doctor`) and **Plan run** (pick models × efforts, see the cost, copy the command). UI development: run `serve`, then `npm run dev` in `web/`
+Screens:
+- **Models**: every competitor and judge, the model id and effort that actually run, one-click health checks.
+- **Plan run**: pick an effort per model (models left on "—" don't run), see calls and cost per subscription,
+  then **Run**. The run belongs to the server: you can close the tab and come back to its progress. One run
+  at a time (they'd compete for the same quotas). Cancel keeps the answers so far; starting the same run
+  again resumes it. If the server stops, the run stops too - start it again to resume.
+- **Results**: every model with *fit for you*, *general quality* and *reliability* (%), sortable, with
+  margins; head-to-head underneath. "View results" after a run opens it here. UI development: run `serve`, then `npm run dev` in `web/`
 (hot reload, proxies `/api` to the server).
 
 **Why a local server, not a hosted site:** models run through CLIs logged in on *your* machine;

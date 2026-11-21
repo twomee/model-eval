@@ -7,10 +7,10 @@ from __future__ import annotations
 
 import shlex
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
-from ...config import ModelSpec, load_config, load_tasks
+from ...config import Config, ModelSpec, Task, load_config, load_tasks
 from ...estimate import estimate
 from ..schemas import (CategoryOut, EstimateIn, EstimateOut, FamilyOut, PlanOptionsOut,
                        SubscriptionCostOut, VariantOut)
@@ -47,7 +47,9 @@ class PlanService:
             repetitions=cfg.run.repetitions,
             judges=[_to_out(j, "judge") for j in cfg.judges])
 
-    def estimate(self, body: EstimateIn) -> EstimateOut:
+    def resolve(self, body: EstimateIn) -> tuple[Config, list[Task], list[ModelSpec]]:
+        """A selection -> (config with repetitions applied, tasks, models). The estimate AND the run
+        button use this, so the number of calls you're shown is the run that starts."""
         cfg = load_config(self.config_path)
         tasks = load_tasks(self.tasks_dir)
         by_name = {m.name: m for m in cfg.models}
@@ -58,15 +60,24 @@ class PlanService:
             raise UnknownCategoriesError(f"unknown categories: {sorted(bad)}")
         if body.categories:
             tasks = [t for t in tasks if t.category in body.categories]
+        if body.repetitions:
+            cfg = replace(cfg, run=replace(cfg.run, repetitions=body.repetitions))
         wanted = set(body.models)
-        models = [m for m in cfg.models if m.name in wanted]  # config order, not click order
+        return cfg, tasks, [m for m in cfg.models if m.name in wanted]  # config order, not click order
+
+    def estimate(self, body: EstimateIn) -> EstimateOut:
+        cfg, tasks, models = self.resolve(body)
+        known_cats = {t.category for t in load_tasks(self.tasks_dir)}
+        # resolve() applied the requested repetitions; the command must compare with the CONFIG's
+        # value, or `--repetitions N` would be dropped and the copied command would run a different run.
+        configured_reps = load_config(self.config_path).run.repetitions
         est = estimate(cfg, tasks, models, body.repetitions, self.results_dir)
         return EstimateOut(
             n_competitors=len(models), n_tasks=est.n_tasks, n_rubric_tasks=est.n_rubric_tasks,
             repetitions=est.repetitions, total_calls=est.total_calls,
             subscriptions=[SubscriptionCostOut(**s.__dict__, total_calls=s.total_calls) for s in est.subscriptions],
             notes=est.notes,
-            command=build_command(cfg.models, models, body, cfg.run.repetitions, str(self.config_path),
+            command=build_command(cfg.models, models, body, configured_reps, str(self.config_path),
                                   all_categories=sorted(known_cats)))
 
 

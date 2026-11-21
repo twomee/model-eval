@@ -28,7 +28,11 @@ export function ResultsPage({ client }: Props) {
 }
 
 function ResultsView({ client, runs, onReload }: { client: Api; runs: RunInfo[]; onReload: () => void }) {
-  const [run, setRun] = useState(runs[0].name)
+  // "View results" after a run links to #results/<run>: open that run if it exists, else the newest.
+  const [run, setRun] = useState(() => {
+    const linked = decodeURIComponent(window.location.hash.split('/')[1] ?? '')
+    return runs.some((r) => r.name === linked) ? linked : runs[0].name
+  })
   const load = useCallback(() => client.comparison(run), [client, run])
   const comparison = useResource(load)
   const data = comparison.data?.run === run ? comparison.data : null // never show another run's numbers
