@@ -190,3 +190,23 @@ def test_model_code_cannot_read_your_environment(monkeypatch):
     r = asyncio.run(grade_python_tests(Task(id="t", category="c", prompt="p", graders=[]), answer,
                                        {"tests": tests}, GradingContext(RunSettings(), [])))
     assert r.score == 1.0, r.details
+
+
+# ---------------------------------------------------------------- F: head-of-line blocking
+
+def test_waiting_calls_dont_hold_global_slots(probe):
+    """F (found during a real 1,872-call run): locks were taken global -> subscription -> model.
+    Jobs are queued model by model, so the first model's calls grabbed every global slot and
+    then waited on that model's own lock: effective parallelism 1 while 23 models sat idle.
+    Narrowest lock first means a call only takes a global slot when it can actually run."""
+    from evalkit.limits import Limits
+    specs = [ModelSpec(name=f"{sub}-{i}", provider="cli", command=(cli,))
+             for sub, cli in (("c", "claude"), ("o", "codex"), ("g", "agy")) for i in range(2)]
+    limits = Limits(RunSettings(concurrency=4, subscription_concurrency=2))
+    wrapped = {s.name: limits.wrap(s, _Probe(s, None)) for s in specs}
+
+    async def go():
+        # queued exactly like generate(): every call of model 1, then every call of model 2, ...
+        await asyncio.gather(*(wrapped[s.name].complete(providers.Request(prompt="p")) for s in specs for _ in range(5)))
+    asyncio.run(go())
+    assert probe.peak == 4   # 6 models on 3 subscriptions: the global cap is the limit, not 1

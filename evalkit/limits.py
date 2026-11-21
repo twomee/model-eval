@@ -6,8 +6,13 @@ Three caps, because three different things run out:
     are 13 models but ONE Google quota: a per-model cap alone would send 13 calls at once.
   * per model (spec.concurrency)        - a model that must run one-at-a-time
 
-Every call acquires them in the same order (global -> subscription -> model), so two calls
-can never hold one each while waiting for the other's (no deadlock).
+Every call acquires them in the same order, NARROWEST FIRST (model -> subscription -> global):
+  * same order for every call -> two calls can never hold one each while waiting for the
+    other's (no deadlock);
+  * narrowest first -> a call only takes a global slot once it can actually run. The reverse
+    order (global first) caused head-of-line blocking: jobs are queued model by model, so the
+    first model's calls took every global slot and then waited on that model's own lock -
+    effective parallelism 1 while every other model sat idle (found in a 1,872-call run).
 """
 from __future__ import annotations
 
@@ -34,7 +39,7 @@ class Limits:
     def wrap(self, spec: ModelSpec, provider: Provider) -> Provider:
         default = 1 if spec.provider in ("cli", "manual") else self.settings.concurrency
         model_sem = asyncio.Semaphore(spec.concurrency or default)
-        sems = [s for s in (self.global_sem, self.subscription_sem(spec), model_sem) if s is not None]
+        sems = [s for s in (model_sem, self.subscription_sem(spec), self.global_sem) if s is not None]
         return Limited(provider, sems)
 
 
