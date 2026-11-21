@@ -19,6 +19,37 @@ from .limits import Limits
 from .providers import AnswerPending, Provider, ProviderError, Request, make_provider, manual_paths
 
 
+class Progress:
+    """Where the runner reports what it's doing. The runner doesn't know who listens:
+    the CLI prints (ConsoleProgress), the web UI updates a job (api/services/run_service.py)."""
+
+    def stage(self, stage: str, total: int, already_done: int) -> None: ...
+
+    def item(self, stage: str, model: str, task_id: str, rep: int, detail: str, failed: bool) -> None: ...
+
+    def note(self, message: str) -> None: ...
+
+
+class ConsoleProgress(Progress):
+    def __init__(self) -> None:
+        self.counter = 0
+
+    def stage(self, stage: str, total: int, already_done: int) -> None:
+        self.counter = 0
+        if stage == "generate":
+            print(f"generate: {total} calls to make ({already_done} already done)")
+        else:
+            print(f"grade: {total} answers to grade ({already_done} already graded)")
+
+    def item(self, stage: str, model: str, task_id: str, rep: int, detail: str, failed: bool) -> None:
+        self.counter += 1
+        prefix = f"  [{self.counter}] " if stage == "generate" else "  "
+        print(f"{prefix}{model:<18} {task_id:<28} rep{rep}  {detail}")
+
+    def note(self, message: str) -> None:
+        print(f"  {message}")
+
+
 def _key(model: str, task: Task, rep: int) -> str:
     return f"{model}|{task.id}|{task.fingerprint}|{rep}"
 
@@ -49,7 +80,9 @@ def _limited(spec: ModelSpec, cfg: Config, limits: Limits | None = None) -> Prov
     return (limits or Limits(cfg.run)).wrap(spec, make_provider(spec, settings))
 
 
-async def generate(cfg: Config, tasks: list[Task], run_dir: Path, models: Iterable[ModelSpec]) -> None:
+async def generate(cfg: Config, tasks: list[Task], run_dir: Path, models: Iterable[ModelSpec],
+                   progress: Progress | None = None) -> None:
+    progress = progress or ConsoleProgress()
     out = _Appender(run_dir / "generations.jsonl")
     done = {r["key"] for r in read_jsonl(out.path) if not r.get("error")}
     jobs, pending = [], []
@@ -59,7 +92,7 @@ async def generate(cfg: Config, tasks: list[Task], run_dir: Path, models: Iterab
         try:
             provider = _limited(spec, cfg, limits)
         except ProviderError as e:
-            print(f"  ! skipping {spec.name}: {e}")
+            progress.note(f"! skipping {spec.name}: {e}")
             continue
         for task in tasks:
             for rep in range(_reps(spec, cfg)):
@@ -68,11 +101,9 @@ async def generate(cfg: Config, tasks: list[Task], run_dir: Path, models: Iterab
                     jobs.append((spec, provider, task, rep, key))
 
     total = len(jobs)
-    print(f"generate: {total} calls to make ({len(done)} already done)")
-    counter = 0
+    progress.stage("generate", total, len(done))
 
     async def run_one(spec: ModelSpec, provider: Provider, task: Task, rep: int, key: str) -> None:
-        nonlocal counter
         req = Request(prompt=task.prompt, system=task.system, max_tokens=cfg.run.max_tokens,
                       temperature=cfg.run.temperature,
                       meta={"task_id": task.id, "reference": task.reference})
@@ -86,20 +117,23 @@ async def generate(cfg: Config, tasks: list[Task], run_dir: Path, models: Iterab
                           else spec.cost(comp.input_tokens or 0, comp.output_tokens or 0))
         except AnswerPending as e:
             pending.append(str(e))
+            # Counted, so progress reaches 100%: nothing to call, the human hasn't pasted it yet.
+            progress.item("generate", spec.name, task.id, rep, "manual: answer not pasted yet", False)
             return
         except ProviderError as e:
             record["error"] = str(e)
         await out.write(record)
-        counter += 1
         status = "ERR " + record["error"][:80] if "error" in record else f"{record['latency_s']:.1f}s"
-        print(f"  [{counter}/{total}] {spec.name:<18} {task.id:<28} rep{rep}  {status}")
+        progress.item("generate", spec.name, task.id, rep, status, "error" in record)
 
     await asyncio.gather(*(run_one(*j) for j in jobs))
     if pending:
-        print(f"  … {len(pending)} manual answers still missing (run `evalkit export` to see prompts)")
+        progress.note(f"… {len(pending)} manual answers still missing (run `evalkit export` to see prompts)")
 
 
-async def grade_all(cfg: Config, tasks: list[Task], run_dir: Path, regrade: bool = False) -> None:
+async def grade_all(cfg: Config, tasks: list[Task], run_dir: Path, regrade: bool = False,
+                    progress: Progress | None = None) -> None:
+    progress = progress or ConsoleProgress()
     gens = {r["key"]: r for r in read_jsonl(run_dir / "generations.jsonl") if not r.get("error")}
     grades_path = run_dir / "grades.jsonl"
     if regrade and grades_path.exists():
@@ -114,12 +148,12 @@ async def grade_all(cfg: Config, tasks: list[Task], run_dir: Path, regrade: bool
         try:
             judges.append((spec, _limited(spec, cfg, limits)))
         except ProviderError as e:
-            print(f"  ! judge {spec.name} unavailable: {e}")
+            progress.note(f"! judge {spec.name} unavailable: {e}")
     ctx = GradingContext(cfg.run, judges)
 
     todo = [g for k, g in gens.items() if k not in graded and g["task_id"] in by_id
             and k.split("|")[2] == by_id[g["task_id"]].fingerprint]  # ignore outputs for edited tasks
-    print(f"grade: {len(todo)} answers to grade ({len(graded)} already graded)")
+    progress.stage("grade", len(todo), len(graded))
     sem = asyncio.Semaphore(cfg.run.concurrency)
 
     async def run_one(g: dict[str, Any]) -> None:
@@ -129,7 +163,7 @@ async def grade_all(cfg: Config, tasks: list[Task], run_dir: Path, regrade: bool
                          "category": g["category"], "rep": g["rep"], "score": score,
                          "parts": [asdict(p) for p in parts]})
         s = "n/a" if score is None else f"{score:.2f}"
-        print(f"  {g['model']:<18} {g['task_id']:<28} rep{g['rep']}  score={s}")
+        progress.item("grade", g["model"], g["task_id"], g["rep"], f"score={s}", score is None)
 
     await asyncio.gather(*(run_one(g) for g in todo))
 

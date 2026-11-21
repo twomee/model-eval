@@ -41,9 +41,13 @@ function fakeClient(overrides: Partial<Api> = {}): Api {
     estimate: vi.fn(async (req: EstimateRequest) => estimateFor(req)),
     listRuns: vi.fn(),
     comparison: vi.fn(),
+    startRun: vi.fn(), currentJob: vi.fn(async () => null), cancelRun: vi.fn(),
     ...overrides,
   }
 }
+
+const findCost = async (text: RegExp) =>
+  within(await screen.findByRole('region', { name: 'Estimated cost' })).findByText(text)
 
 const lastRequest = (client: Api) =>
   (client.estimate as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as EstimateRequest
@@ -52,7 +56,7 @@ describe('PlanPage', () => {
   it('starts with the defaults and shows their cost and command', async () => {
     const client = fakeClient()
     render(<PlanPage client={client} />)
-    expect(await screen.findByText(/66 calls/)).toBeInTheDocument() // 2 models x 11 tasks x 3 reps
+    expect(await findCost(/66 calls/)).toBeInTheDocument() // 2 models x 11 tasks x 3 reps
     expect(lastRequest(client).models).toEqual(['claude-opus-medium', 'gpt-oss-medium'])
     expect(screen.getByText(/--models claude-opus-medium,gpt-oss-medium/)).toBeInTheDocument()
     expect(screen.getByText('$2.50')).toBeInTheDocument() // est. cost column (2 models x 1.25)
@@ -68,7 +72,7 @@ describe('PlanPage', () => {
     await waitFor(() => expect(lastRequest(client).models).toEqual(
       ['claude-opus-low', 'claude-opus-medium', 'claude-opus-high', 'gpt-oss-medium']))
     expect(screen.getByLabelText(/claude-opus efforts: all \(3\)/)).toBeInTheDocument()
-    expect(await screen.findByText(/132 calls/)).toBeInTheDocument()
+    expect(await findCost(/132 calls/)).toBeInTheDocument()
   })
 
   it('"All efforts, all models" and "Clear"', async () => {
@@ -110,7 +114,7 @@ describe('PlanPage', () => {
   it('debounces: several quick changes send one request', async () => {
     const client = fakeClient()
     render(<PlanPage client={client} />)
-    await screen.findByText(/66 calls/)
+    await findCost(/66 calls/)
     const before = (client.estimate as ReturnType<typeof vi.fn>).mock.calls.length
     await userEvent.click(screen.getByLabelText(/claude-opus efforts/))
     const menu = screen.getByRole('checkbox', { name: 'All' }).closest('.picker-menu') as HTMLElement

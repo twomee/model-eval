@@ -149,3 +149,29 @@ export interface ScoreRow {
   leader_fit: boolean
   leader_general: boolean
 }
+
+// ---------------------------------------------------------------- run jobs (Run button)
+
+export type JobStatus = 'running' | 'succeeded' | 'failed' | 'cancelled'
+
+export interface StageProgress {
+  total: number
+  done: number
+  failed: number
+  already_done: number
+}
+
+export interface Job {
+  run_name: string
+  status: JobStatus
+  models: string[]
+  n_tasks: number
+  repetitions: number
+  stage: string
+  stages: Record<string, StageProgress>
+  recent: string[]
+  error: string | null
+  started_at: number
+  finished_at: number | null
+  results_url: string
+}

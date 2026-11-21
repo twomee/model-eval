@@ -1,5 +1,5 @@
 import type {
-  ComparisonResponse, DoctorResponse, EstimateRequest, EstimateResponse, ModelsResponse, PlanOptions, RunInfo,
+  ComparisonResponse, DoctorResponse, EstimateRequest, EstimateResponse, Job, ModelsResponse, PlanOptions, RunInfo,
 } from '../types/api'
 
 /** An HTTP error with the server's `detail` message, so the UI can show *why*. */
@@ -63,6 +63,24 @@ export const api = {
   listRuns: () => request<RunInfo[]>('/api/runs'),
 
   comparison: (run: string) => request<ComparisonResponse>(`/api/runs/${encodeURIComponent(run)}/comparison`),
+
+  // Starts a REAL run: spends subscription quota. The server runs it in the background.
+  startRun: (body: EstimateRequest) =>
+    request<Job>('/api/jobs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+
+  currentJob: () => request<{ job: Job | null }>('/api/jobs/current').then((r) => r.job),
+
+  // JSON even without a body: the server requires it on every write (CSRF protection).
+  cancelRun: () =>
+    request<Job>('/api/jobs/current/cancel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    }),
 }
 
 export type Api = typeof api

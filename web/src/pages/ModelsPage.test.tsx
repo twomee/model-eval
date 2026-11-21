@@ -32,6 +32,7 @@ function fakeClient(overrides: Partial<Api> = {}): Api {
     estimate: vi.fn(),
     listRuns: vi.fn(),
     comparison: vi.fn(),
+    startRun: vi.fn(), currentJob: vi.fn(async () => null), cancelRun: vi.fn(),
     ...overrides,
   }
 }

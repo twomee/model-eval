@@ -10,7 +10,7 @@ type Page = keyof typeof PAGES
 // The page lives in the URL hash (#plan): reload and back/forward keep you where you were,
 // without a router dependency for two pages.
 function pageFromHash(): Page {
-  const h = window.location.hash.slice(1)
+  const h = window.location.hash.slice(1).split('/')[0] // #results/<run> deep-links a run
   return h in PAGES ? (h as Page) : 'models'
 }
 

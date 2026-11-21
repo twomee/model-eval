@@ -171,3 +171,34 @@ class ComparisonOut(BaseModel):
     notes: list[str]
     flagged_tasks: list[FlaggedTaskOut]
     report_url: str | None
+
+
+# ---------------------------------------------------------------- run jobs (Run button)
+
+JobStatus = Literal["running", "succeeded", "failed", "cancelled"]
+
+
+class StageOut(BaseModel):
+    total: int
+    done: int
+    failed: int
+    already_done: int = Field(description="finished in an earlier run of the same name (resumed)")
+
+
+class JobOut(BaseModel):
+    run_name: str
+    status: JobStatus
+    models: list[str]
+    n_tasks: int
+    repetitions: int
+    stage: str = Field(description="generate | grade | report | done")
+    stages: dict[str, StageOut]
+    recent: list[str] = Field(description="last lines of progress, newest last")
+    error: str | None
+    started_at: float
+    finished_at: float | None
+    results_url: str
+
+
+class CurrentJobOut(BaseModel):
+    job: JobOut | None

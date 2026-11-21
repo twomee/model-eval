@@ -1,8 +1,10 @@
 import { useMemo, useState } from 'react'
 import { CommandBox } from '../components/CommandBox'
 import { CostSummary } from '../components/CostSummary'
+import { RunPanel } from '../components/RunPanel'
 import { EffortPicker } from '../components/EffortPicker'
 import { useEstimate } from '../hooks/useEstimate'
+import { useJob } from '../hooks/useJob'
 import { useResource } from '../hooks/useResource'
 import type { Api } from '../services/api'
 import type { EstimateRequest, PlanOptions } from '../types/api'
@@ -44,6 +46,7 @@ function PlanForm({ client, options }: { client: Api; options: PlanOptions }) {
       repetitions, run_name: runName }
   }, [selection, categories, repetitions, runName, runNameValid, repsValid, options.families])
   const estimate = useEstimate(client, request)
+  const job = useJob(client)
 
   return (
     <>
@@ -56,6 +59,7 @@ function PlanForm({ client, options }: { client: Api; options: PlanOptions }) {
 
       <section>
         <h2>Models and efforts</h2>
+        <p className="muted">Pick an effort for each model you want to run; models left on “—” don’t run.</p>
         <div className="table-wrap">
           <table>
             <thead>
@@ -116,8 +120,16 @@ function PlanForm({ client, options }: { client: Api; options: PlanOptions }) {
       {request && estimate.data && (
         <div aria-busy={estimate.loading}>
           <CostSummary estimate={estimate.data} />
-          <CommandBox command={estimate.data.command} />
         </div>
+      )}
+      {/* Always rendered: a run in progress stays visible (and cancellable) whatever is selected now. */}
+      <RunPanel estimate={request && estimate.fresh ? estimate.data : null} job={job.job} starting={job.starting}
+        error={job.error} onStart={() => request && void job.start(request)} onCancel={() => void job.cancel()} />
+      {request && estimate.data && (
+        <details className="cli-alt">
+          <summary>Or run it from a terminal</summary>
+          <CommandBox command={estimate.data.command} />
+        </details>
       )}
     </>
   )

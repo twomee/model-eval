@@ -20,8 +20,8 @@ from pathlib import Path
 from .config import ModelSpec, load_config, load_tasks
 from .estimate import Estimate, estimate
 from .doctor import format_report, run_doctor
-from .report import build_summary, write_csv, write_html
-from .runner import export_manual, generate, grade_all
+from .pipeline import run_eval, write_reports
+from .runner import export_manual, grade_all
 
 
 def _csv(s: str | None) -> set[str] | None:
@@ -132,14 +132,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"wrote {len(paths)} prompt files under manual/ — paste each reply into the matching .answer.md")
         return 0
     if args.command == "run":
-        asyncio.run(generate(cfg, tasks, run_dir, models))
-        asyncio.run(grade_all(cfg, tasks, run_dir))
-    elif args.command == "grade":
-        asyncio.run(grade_all(cfg, tasks, run_dir, regrade=args.regrade))
-
-    summary = build_summary(cfg, run_dir, tasks)
-    write_html(summary, run_dir / "report.html")
-    write_csv(summary, run_dir / "summary.csv")
+        summary = asyncio.run(run_eval(cfg, tasks, models, run_dir))
+    else:
+        if args.command == "grade":
+            asyncio.run(grade_all(cfg, tasks, run_dir, regrade=args.regrade))
+        summary = write_reports(cfg, run_dir, tasks)
     print(f"\nreport: {run_dir / 'report.html'}")
     flagged = [s for s in summary["task_signal"] if s["verdict"] != "separates"]
     if flagged:
