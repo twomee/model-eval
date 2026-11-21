@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .config import Config, ModelSpec, Task
-from .graders import GradingContext, grade
+from .graders import GradingContext, grade, incomplete_grade
 from .limits import Limits
 from .providers import AnswerPending, Provider, ProviderError, Request, make_provider, manual_paths
 
@@ -55,9 +55,21 @@ def _key(model: str, task: Task, rep: int) -> str:
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
+    """Records of a JSONL file. The LAST line may be half-written (grading reads the answers file
+    while generation is still appending, or a crash cut a write short): it is skipped. A broken
+    line anywhere else is real corruption and raises."""
     if not path.exists():
         return []
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    out = []
+    for i, line in enumerate(lines):
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            if i == len(lines) - 1:
+                continue
+            raise
+    return out
 
 
 class _Appender:
@@ -81,12 +93,12 @@ def _limited(spec: ModelSpec, cfg: Config, limits: Limits | None = None) -> Prov
 
 
 async def generate(cfg: Config, tasks: list[Task], run_dir: Path, models: Iterable[ModelSpec],
-                   progress: Progress | None = None) -> None:
+                   progress: Progress | None = None, limits: Limits | None = None) -> None:
     progress = progress or ConsoleProgress()
     out = _Appender(run_dir / "generations.jsonl")
     done = {r["key"] for r in read_jsonl(out.path) if not r.get("error")}
     jobs, pending = [], []
-    limits = Limits(cfg.run)  # one registry: caps are shared by every model on a subscription
+    limits = limits or Limits(cfg.run)  # one registry: caps are shared by every model on a subscription
 
     for spec in models:
         try:
@@ -132,18 +144,22 @@ async def generate(cfg: Config, tasks: list[Task], run_dir: Path, models: Iterab
 
 
 async def grade_all(cfg: Config, tasks: list[Task], run_dir: Path, regrade: bool = False,
-                    progress: Progress | None = None) -> None:
+                    progress: Progress | None = None, limits: Limits | None = None) -> None:
     progress = progress or ConsoleProgress()
     gens = {r["key"]: r for r in read_jsonl(run_dir / "generations.jsonl") if not r.get("error")}
     grades_path = run_dir / "grades.jsonl"
     if regrade and grades_path.exists():
         grades_path.unlink()
     out = _Appender(grades_path)
-    graded = {r["key"] for r in read_jsonl(grades_path) if r.get("score") is not None}
+    latest: dict[str, dict[str, Any]] = {}
+    for r in read_jsonl(grades_path):
+        latest[r["key"]] = r                    # a regrade appends; the last record counts
+    # Graded = has a score AND a complete judge panel (a quota-cut panel is regraded).
+    graded = {k for k, r in latest.items() if r.get("score") is not None and not incomplete_grade(r)}
     by_id = {t.id: t for t in tasks}
 
     judges = []
-    limits = Limits(cfg.run)
+    limits = limits or Limits(cfg.run)  # shared with generation when run together (see pipeline)
     for spec in cfg.judges:
         try:
             judges.append((spec, _limited(spec, cfg, limits)))
@@ -159,11 +175,18 @@ async def grade_all(cfg: Config, tasks: list[Task], run_dir: Path, regrade: bool
     async def run_one(g: dict[str, Any]) -> None:
         async with sem:
             score, parts = await grade(by_id[g["task_id"]], g["output"], ctx)
+        if deferred := next((p.details["deferred"] for p in parts if p.details.get("deferred")), None):
+            # Not written: stays ungraded, so the next run grades it with the full judge panel.
+            progress.item("grade", g["model"], g["task_id"], g["rep"], f"deferred ({deferred})", False)
+            return
         await out.write({"key": g["key"], "model": g["model"], "task_id": g["task_id"],
                          "category": g["category"], "rep": g["rep"], "score": score,
                          "parts": [asdict(p) for p in parts]})
         s = "n/a" if score is None else f"{score:.2f}"
-        progress.item("grade", g["model"], g["task_id"], g["rep"], f"score={s}", score is None)
+        # score None = the grader couldn't run (e.g. Go not installed): left out of the score, and
+        # not the model's failure, so it isn't reported as one.
+        detail = f"score={s}" if score is not None else "not scored (grader couldn't run, e.g. toolchain missing)"
+        progress.item("grade", g["model"], g["task_id"], g["rep"], detail, False)
 
     await asyncio.gather(*(run_one(g) for g in todo))
 

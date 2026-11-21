@@ -21,7 +21,7 @@ from typing import Any
 
 from . import procs
 from .config import ModelSpec, RunSettings, Task
-from .providers import Provider, ProviderError, Request
+from .providers import Provider, ProviderError, Request, is_quota_message
 
 
 @dataclass
@@ -298,12 +298,23 @@ async def grade_rubric(task: Task, answer: str, cfg: dict, ctx: GradingContext) 
             try:
                 comp = await provider.complete(req)
                 return spec.name, _parse_judge(comp.text, ids)
-            except (ValueError, KeyError, json.JSONDecodeError, ProviderError) as e:
+            except ProviderError as e:
+                if e.quota:  # out of quota: retrying now is pointless; see `deferred` below
+                    return spec.name, f"QUOTA: {e}"
+                err = repr(e)
+            except (ValueError, KeyError, json.JSONDecodeError) as e:
                 err = repr(e)
         return spec.name, err
 
+    results = await asyncio.gather(*(one(s, p) for s, p in ctx.judges))
+    if out_of_quota := [n for n, r in results if isinstance(r, str) and r.startswith("QUOTA:")]:
+        # Never grade with HALF the panel: one judge alone carries its family's self-preference,
+        # and the answer would be scored differently from its neighbours. Leave it ungraded; a
+        # later run (after the subscription resets) grades it with every judge.
+        return GradeResult("rubric", None, details={"judges": dict(results),
+                                                    "deferred": f"judge out of quota: {', '.join(out_of_quota)}"})
     per_judge, judge_scores = {}, []
-    for name, res in await asyncio.gather(*(one(s, p) for s, p in ctx.judges)):
+    for name, res in results:
         per_judge[name] = res
         if isinstance(res, dict):
             total_w = sum(weights.values())
@@ -314,6 +325,16 @@ async def grade_rubric(task: Task, answer: str, cfg: dict, ctx: GradingContext) 
     # Disagreement between judges is a signal: high spread = vague rubric, fix the rubric.
     spread = max(judge_scores) - min(judge_scores)
     return GradeResult("rubric", score, details={"judges": per_judge, "judge_spread": round(spread, 3)})
+
+
+def incomplete_grade(record: dict[str, Any]) -> bool:
+    """A stored grade whose judge panel was cut short by a quota error (the old behaviour scored
+    it with the remaining judges). It must be regraded with the full panel, not counted."""
+    for part in record.get("parts") or []:
+        for result in ((part.get("details") or {}).get("judges") or {}).values():
+            if isinstance(result, str) and (result.startswith("QUOTA:") or is_quota_message(result)):
+                return True
+    return False
 
 
 CONSTRAINTS = {"length", "language"}

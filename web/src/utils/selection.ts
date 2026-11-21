@@ -47,3 +47,11 @@ export function pickerLabel(sel: Selection, family: Family): string {
 export function orderedNames(families: Family[], sel: Selection): string[] {
   return families.flatMap((f) => f.variants.filter((v) => sel.has(v.name)).map((v) => v.name))
 }
+
+/** "claude-opus: medium · glm: low, high, max" - a run's competitors grouped by model family. */
+export function describeSelection(families: Family[], names: readonly string[]): { family: string; efforts: string[] }[] {
+  const chosen = new Set(names)
+  return families
+    .map((f) => ({ family: f.family, efforts: f.variants.filter((v) => chosen.has(v.name)).map((v) => v.effort ?? 'on') }))
+    .filter((g) => g.efforts.length > 0)
+}

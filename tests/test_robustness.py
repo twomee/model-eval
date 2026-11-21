@@ -190,3 +190,73 @@ def test_model_code_cannot_read_your_environment(monkeypatch):
     r = asyncio.run(grade_python_tests(Task(id="t", category="c", prompt="p", graders=[]), answer,
                                        {"tests": tests}, GradingContext(RunSettings(), [])))
     assert r.score == 1.0, r.details
+
+
+# ---------------------------------------------------------------- F: head-of-line blocking
+
+def test_waiting_calls_dont_hold_global_slots(probe):
+    """F (found during a real 1,872-call run): locks were taken global -> subscription -> model.
+    Jobs are queued model by model, so the first model's calls grabbed every global slot and
+    then waited on that model's own lock: effective parallelism 1 while 23 models sat idle.
+    Narrowest lock first means a call only takes a global slot when it can actually run."""
+    from evalkit.limits import Limits
+    specs = [ModelSpec(name=f"{sub}-{i}", provider="cli", command=(cli,))
+             for sub, cli in (("c", "claude"), ("o", "codex"), ("g", "agy")) for i in range(2)]
+    limits = Limits(RunSettings(concurrency=4, subscription_concurrency=2))
+    wrapped = {s.name: limits.wrap(s, _Probe(s, None)) for s in specs}
+
+    async def go():
+        # queued exactly like generate(): every call of model 1, then every call of model 2, ...
+        await asyncio.gather(*(wrapped[s.name].complete(providers.Request(prompt="p")) for s in specs for _ in range(5)))
+    asyncio.run(go())
+    assert probe.peak == 4   # 6 models on 3 subscriptions: the global cap is the limit, not 1
+
+
+# ---------------------------------------------------------------- G: grading overlaps answering
+
+def test_read_jsonl_skips_only_a_half_written_last_line(tmp_path):
+    from evalkit.runner import read_jsonl
+    p = tmp_path / "g.jsonl"
+    p.write_text('{"a": 1}\n{"a": 2}\n{"a": 3, "trunc', encoding="utf-8")   # being appended right now
+    assert read_jsonl(p) == [{"a": 1}, {"a": 2}]
+    p.write_text('{"a": 1}\nGARBAGE\n{"a": 3}\n', encoding="utf-8")           # real corruption
+    with pytest.raises(Exception):
+        read_jsonl(p)
+
+
+def test_grading_starts_before_the_slowest_model_finishes(tmp_path, monkeypatch):
+    """G: grading used to wait for EVERY answer, leaving the judges' subscriptions idle for hours
+    while one slow subscription finished. Now finished answers are graded while others answer."""
+    from evalkit import pipeline
+
+    class Fast(_Probe):
+        async def complete(self, req):
+            return providers.Completion("x", 0.0, 1, 1)
+
+    class Slow(_Probe):
+        async def complete(self, req):
+            await asyncio.sleep(0.4)
+            return providers.Completion("x", 0.4, 1, 1)
+
+    monkeypatch.setitem(providers._REGISTRY, "fast", Fast)
+    monkeypatch.setitem(providers._REGISTRY, "slow", Slow)
+    graded_while_answering = []
+    real_grade_all = pipeline.grade_all
+
+    async def spy_grade_all(cfg, tasks, run_dir, **kw):
+        slow_done = sum(1 for r in runner.read_jsonl(run_dir / "generations.jsonl") if r["model"] == "slow")
+        graded_while_answering.append(slow_done < len(tasks))
+        await real_grade_all(cfg, tasks, run_dir, **kw)
+
+    monkeypatch.setattr(pipeline, "grade_all", spy_grade_all)
+    monkeypatch.chdir(tmp_path)
+    tasks = [Task(id=f"t{i}", category="c", prompt=f"p{i}", reference="x",
+                  graders=[{"type": "match", "must_include": ["x"]}]) for i in range(4)]
+    models = [ModelSpec(name="fast", provider="fast"), ModelSpec(name="slow", provider="slow")]
+    cfg = Config(run=RunSettings(repetitions=1), models=models, judges=[], category_weights={})
+    asyncio.run(pipeline.run_eval(cfg, tasks, models, tmp_path / "r", grade_every_s=0.1))
+
+    assert graded_while_answering[0] is True                 # a pass ran while "slow" was still answering
+    grades = runner.read_jsonl(tmp_path / "r" / "grades.jsonl")
+    assert sorted((g["model"], g["task_id"]) for g in grades) == sorted((m.name, t.id) for m in models for t in tasks)
+    assert len(grades) == 8                                   # every answer graded exactly once

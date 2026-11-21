@@ -18,6 +18,7 @@ from typing import Any
 
 from .compare import USABLE, Comparison, Ranking, ScoreRow, attempt_counts, compare, scorecard
 from .config import Config, Task
+from .graders import incomplete_grade
 from .runner import read_jsonl
 
 
@@ -73,6 +74,9 @@ def _current(records: dict[str, dict[str, Any]], tasks: list[Task] | None) -> di
 def build_summary(cfg: Config, run_dir: Path, tasks: list[Task] | None = None) -> dict[str, Any]:
     gens = _current(_latest(read_jsonl(run_dir / "generations.jsonl")), tasks)
     grades = _current(_latest(read_jsonl(run_dir / "grades.jsonl")), tasks)
+    # A grade whose judge panel was cut short by a quota error isn't comparable: leave it out
+    # until it's regraded with every judge (grade_all does that on the next run).
+    grades = {k: r for k, r in grades.items() if not incomplete_grade(r)}
     task_cat = {g["task_id"]: g["category"] for g in gens.values()}
     categories = sorted(set(task_cat.values()))
     # pair id -> {lang: task_id}, for the Hebrew-vs-English comparison

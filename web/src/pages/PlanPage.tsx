@@ -124,7 +124,15 @@ function PlanForm({ client, options }: { client: Api; options: PlanOptions }) {
       )}
       {/* Always rendered: a run in progress stays visible (and cancellable) whatever is selected now. */}
       <RunPanel estimate={request && estimate.fresh ? estimate.data : null} job={job.job} starting={job.starting}
-        error={job.error} onStart={() => request && void job.start(request)} onCancel={() => void job.cancel()} />
+        error={job.error} onStart={() => request && void job.start(request)} onCancel={() => void job.cancel()}
+        families={options.families}
+        onUseRunSelection={(models) => {
+          setSelection(new Set(models))
+          if (job.job) {
+            setRunName(job.job.run_name)
+            setRepetitions(job.job.repetitions)
+          }
+        }} />
       {request && estimate.data && (
         <details className="cli-alt">
           <summary>Or run it from a terminal</summary>
