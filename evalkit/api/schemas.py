@@ -97,6 +97,7 @@ class SubscriptionCostOut(BaseModel):
     total_calls: int
     est_input_tokens: int
     est_output_tokens: int
+    est_cost_usd: float
     models_without_history: int
 
 

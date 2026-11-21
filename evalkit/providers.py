@@ -23,6 +23,7 @@ from typing import Any, Protocol
 
 import httpx
 
+from . import procs
 from .config import ModelSpec, RunSettings
 
 
@@ -174,54 +175,61 @@ class CliProvider:
             with tempfile.TemporaryDirectory(prefix="evalkit-cli-") as cwd:
                 t0 = time.perf_counter()
                 try:
-                    proc = await asyncio.create_subprocess_exec(
-                        *argv, cwd=cwd, env=self.env,
-                        stdin=asyncio.subprocess.DEVNULL if uses_placeholder else asyncio.subprocess.PIPE,
-                        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                    code, out, err = await procs.run(
+                        argv, cwd=cwd, env=self.env, timeout=self.settings.timeout_s,
+                        input_bytes=None if uses_placeholder else full.encode())
                 except FileNotFoundError as e:
                     raise ProviderError(f"[{self.spec.name}] CLI not found: {argv[0]}") from e
-                try:
-                    out, err = await asyncio.wait_for(
-                        proc.communicate(None if uses_placeholder else full.encode()),
-                        timeout=self.settings.timeout_s)
                 except asyncio.TimeoutError:
-                    proc.kill()
-                    last_err = ProviderError("cli timeout", retryable=True)
+                    # procs.run already killed the CLI and everything it spawned.
+                    last_err = ProviderError(f"cli timeout after {self.settings.timeout_s:.0f}s", retryable=True)
                 else:
                     latency = time.perf_counter() - t0
                     stdout = out.decode(errors="replace")
-                    if proc.returncode == 0:
-                        return self._parse(stdout, latency)
-                    last_err = self._failure(proc.returncode, stdout, err.decode(errors="replace"))
+                    # Parsed inside the `with`: some CLIs (vibe) write usage/cost files into cwd.
+                    if code == 0:
+                        return self._parse(stdout, latency, Path(cwd))
+                    last_err = self._failure(code, stdout, err.decode(errors="replace"), Path(cwd))
             if not last_err.retryable:
                 break
             await asyncio.sleep(min(120, 5 * 2 ** attempt))
         raise last_err  # type: ignore[misc]
 
-    def _parse(self, stdout: str, latency: float) -> Completion:
+    def _parse(self, stdout: str, latency: float, workdir: Path | None = None) -> Completion:
         parser = _PARSERS.get(self.spec.parse)
         if parser is None:
             return Completion(stdout.strip(), latency)
-        return parser(stdout, latency)
+        return parser(stdout, latency, workdir)
 
-    def _failure(self, code: int, stdout: str, stderr: str) -> ProviderError:
-        # Structured-output CLIs (claude json, codex --json) exit 1 with the real error on
-        # STDOUT and an empty stderr. Let the parser find it; fall back to stderr.
+    def _failure(self, code: int, stdout: str, stderr: str, workdir: Path | None = None) -> ProviderError:
+        # Structured-output CLIs exit non-zero with the error on STDOUT (claude, codex, agy) or
+        # on STDERR with empty stdout (vibe). Ask the parser first, and add stderr's error line
+        # when it has one, so neither source is lost.
+        err_line = _last_error_line(stderr)
         if self.spec.parse in _PARSERS:
             try:
-                self._parse(stdout, 0.0)
+                self._parse(stdout, 0.0, workdir)
             except ProviderError as e:
-                return ProviderError(f"exit {code}: {e}", e.retryable)
+                msg = f"{e} | {err_line}" if err_line and err_line not in str(e) else str(e)
+                return ProviderError(f"exit {code}: {msg}", e.retryable or _is_retryable(err_line))
         msg = _error_summary(stderr) or _error_summary(stdout)
         return ProviderError(f"exit {code}: {msg}", _is_retryable(msg))
 
 
 def _prepare_isolated_home(spec: ModelSpec) -> dict[str, str]:
+    """{env, dir, link: [files to symlink in], files: {name: content to write}}.
+    `files` generates config the CLI only reads from its home (vibe: thinking level per model)."""
     iso = spec.isolated_home
     if not iso:
         return {}
     home = Path(iso["dir"]).expanduser()
     home.mkdir(parents=True, exist_ok=True)
+    for name, content in (iso.get("files") or {}).items():
+        if Path(name).name != name or name in (".", ".."):
+            raise ProviderError(f"[{spec.name}] isolated_home.files: {name!r} must be a plain file name")
+        target = home / name
+        if not target.exists() or target.read_text(encoding="utf-8") != content:  # rewrite only on change
+            target.write_text(content, encoding="utf-8")
     for src in map(lambda x: Path(x).expanduser(), iso.get("link", [])):
         if not src.exists():
             raise ProviderError(f"[{spec.name}] isolated_home: {src} missing (logged in to the CLI?)")
@@ -240,6 +248,14 @@ def _is_retryable(msg: str) -> bool:
     """Subscription CLIs signal limits in text, not status codes. Anything else (bad model id,
     no credits, auth) is permanent: retrying it just burns minutes of backoff."""
     return bool(_RETRYABLE.search(msg))
+
+
+def _last_error_line(stderr: str, limit: int = 500) -> str:
+    """The last line that looks like an error, or "" (unlike _error_summary, no tail fallback:
+    informational stderr like vibe's 'Reading API keys from the keyring' must not become the error)."""
+    lines = [ln.strip() for ln in stderr.splitlines() if ln.strip()]
+    errors = [ln for ln in lines if re.match(r"(error|fatal)\b", ln, re.I) or ln.startswith("ERROR:")]
+    return errors[-1][-limit:] if errors else ""
 
 
 def _error_summary(stderr: str, limit: int = 500) -> str:
@@ -323,7 +339,55 @@ def parse_agy_json(stdout: str, latency: float) -> Completion:
     return Completion(data.get("response", ""), latency, usage.get("input_tokens"), usage.get("output_tokens"))
 
 
-_PARSERS = {"claude_json": parse_claude_json, "codex_jsonl": parse_codex_jsonl, "agy_json": parse_agy_json}
+def parse_vibe_json(stdout: str, latency: float, workdir: Path | None = None) -> Completion:
+    """`vibe -p --output json --output-dir <dir>` (Mistral Vibe) -> Completion.
+
+    stdout = the session's entries (user / reasoning / assistant messages); the answer is the
+    last completed assistant message. Usage, cost and failures are in <dir>/export.json, which
+    the CLI writes into the run's working directory. input_tokens already includes cached.
+    """
+    export = _find_vibe_export(workdir)
+    if export and export.get("error"):
+        msg = str(export["error"])
+        raise ProviderError(f"vibe {export.get('outcome', 'error')}: {msg}", retryable=_is_retryable(msg))
+    # A limit (token_limit, turn_limit, time limit) leaves PARTIAL assistant messages in stdout
+    # ("I'll implement it, then test..."). Only outcome == finished means the last one is the answer.
+    if export and export.get("outcome") not in (None, "finished"):
+        raise ProviderError(f"vibe stopped before answering: outcome={export['outcome']}, "
+                            f"stop_reason={export.get('stop_reason')} (raise --max-tokens/--time-limit?)")
+    try:
+        entries = json.loads(stdout) if stdout.strip() else []
+    except json.JSONDecodeError as e:
+        raise ProviderError(f"vibe: non-JSON output: {stdout[:300]!r}") from e
+    answers = [e for e in entries if isinstance(e, dict) and e.get("type") == "message"
+               and e.get("role") == "assistant" and e.get("generationStatus", "completed") == "completed"]
+    if not answers:
+        outcome = (export or {}).get("outcome", "no export")
+        raise ProviderError(f"vibe: no assistant message (outcome: {outcome})")
+    text = "".join(c.get("text", "") for c in answers[-1].get("content", []) if c.get("type") == "text")
+    usage = (export or {}).get("usage") or {}
+    return Completion(text, latency, usage.get("input_tokens"), usage.get("output_tokens"),
+                      cost_usd=(export or {}).get("cost_usd"))
+
+
+def _find_vibe_export(workdir: Path | None) -> dict | None:
+    if workdir is None:
+        return None
+    for f in [workdir / "export.json", *workdir.glob("*/export.json")]:
+        try:
+            return json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+    return None
+
+
+# Parsers get the run's working directory; only those that need files from it use it.
+_PARSERS = {
+    "claude_json": lambda out, lat, _wd: parse_claude_json(out, lat),
+    "codex_jsonl": lambda out, lat, _wd: parse_codex_jsonl(out, lat),
+    "agy_json": lambda out, lat, _wd: parse_agy_json(out, lat),
+    "vibe_json": parse_vibe_json,
+}
 
 
 # --------------------------------------------------------------------------- Manual (copy/paste)

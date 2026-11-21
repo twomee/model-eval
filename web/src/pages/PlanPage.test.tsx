@@ -27,7 +27,7 @@ function estimateFor(req: EstimateRequest): EstimateResponse {
     n_competitors: req.models.length, n_tasks: 11, n_rubric_tasks: 5, repetitions: req.repetitions,
     total_calls: calls,
     subscriptions: [{ subscription: 'claude', generation_calls: calls, judge_calls: 0, total_calls: calls,
-      est_input_tokens: 0, est_output_tokens: 0, models_without_history: 1 }],
+      est_input_tokens: 0, est_output_tokens: 0, est_cost_usd: 1.25 * req.models.length, models_without_history: 1 }],
     notes: ['Token estimates only cover competitors with an earlier run; calls are exact.'],
     command: `python -m evalkit run --run ${req.run_name} --models ${req.models.join(',')}`,
   }
@@ -53,6 +53,7 @@ describe('PlanPage', () => {
     expect(await screen.findByText(/66 calls/)).toBeInTheDocument() // 2 models x 11 tasks x 3 reps
     expect(lastRequest(client).models).toEqual(['claude-opus-medium', 'gpt-oss-medium'])
     expect(screen.getByText(/--models claude-opus-medium,gpt-oss-medium/)).toBeInTheDocument()
+    expect(screen.getByText('$2.50')).toBeInTheDocument() // est. cost column (2 models x 1.25)
   })
 
   it('effort dropdown: "All" selects every effort of that model and re-estimates', async () => {

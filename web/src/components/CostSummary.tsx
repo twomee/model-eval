@@ -28,6 +28,7 @@ export function CostSummary({ estimate: e }: Props) {
               <th scope="col">answers</th>
               <th scope="col">judging</th>
               <th scope="col">total calls</th>
+              <th scope="col">est. cost</th>
               <th scope="col">est. tokens</th>
             </tr>
           </thead>
@@ -38,6 +39,7 @@ export function CostSummary({ estimate: e }: Props) {
                 <td>{fmt(s.generation_calls)}</td>
                 <td>{fmt(s.judge_calls)}</td>
                 <td><strong>{fmt(s.total_calls)}</strong></td>
+                <td>{s.est_cost_usd > 0 ? `$${s.est_cost_usd.toFixed(2)}` : '–'}</td>
                 <td>
                   {tokens(s.est_input_tokens, s.est_output_tokens)}
                   {s.models_without_history > 0 && (

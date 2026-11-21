@@ -93,3 +93,21 @@ def test_built_ui_serves_root_files_without_path_traversal(monkeypatch, tmp_path
     assert c.get("/favicon.svg").text == "<svg/>"
     for probe in ("/..%2fsecret.txt", "/%2e%2e/secret.txt", "/assets/..%2f..%2fsecret.txt"):
         assert "TOKEN" not in c.get(probe).text, probe
+
+
+def test_broken_config_returns_readable_error_not_bare_500(tmp_path):
+    bad = tmp_path / "c.yaml"
+    bad.write_text("models:\n  - name: m\n    provider: mock\n    model: '{effort}'\n", encoding="utf-8")
+    c = TestClient(create_app(bad, ROOT / "tasks", allowed_hosts=["testserver"]), raise_server_exceptions=False)
+    r = c.get("/api/models")
+    assert r.status_code == 500 and r.headers["content-type"].startswith("application/json")
+    assert "Invalid configuration" in r.json()["detail"] and "placeholders" in r.json()["detail"]
+    assert c.get("/api/health").status_code == 200   # health doesn't depend on config
+
+
+def test_config_error_types_are_unified(tmp_path):
+    from evalkit.config import ConfigError, load_config
+    for body in ("models: [", "run: {nonsense: 1}\nmodels: []", "judges: []"):  # YAML, unknown key, missing key
+        (tmp_path / "c.yaml").write_text(body, encoding="utf-8")
+        with pytest.raises(ConfigError, match="c.yaml"):
+            load_config(tmp_path / "c.yaml")

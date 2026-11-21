@@ -21,6 +21,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.22"
+      # node_tests graders (TypeScript tasks) need Node >= 22.6, which strips types natively.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - run: pip install -r requirements.txt
       - name: Unit + golden tests (every task reference must pass its own graders)
         run: python -m pytest

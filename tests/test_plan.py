@@ -144,3 +144,20 @@ def test_estimate_command_round_trips_to_same_selection(client, setup):
 ])
 def test_estimate_rejects_bad_input(client, payload):
     assert client.post("/api/plan/estimate", json=payload).status_code == 422
+
+
+def test_cost_estimated_from_cost_the_cli_reported(setup, tmp_path):
+    cfg, tasks, _ = setup
+    run = tmp_path / "results" / "old"
+    run.mkdir(parents=True)
+    rows = [{"model": "m-good", "input_tokens": 1, "output_tokens": 1, "cost_usd": 0.02},
+            {"model": "m-good", "input_tokens": 1, "output_tokens": 1, "cost_usd": 0.04},
+            {"model": "m-sloppy", "input_tokens": 1, "output_tokens": 1}]          # tokens but no cost
+    (run / "generations.jsonl").write_text("\n".join(map(json.dumps, rows)), encoding="utf-8")
+    est = estimate(cfg, tasks, [m for m in cfg.models if m.name in {"m-good", "m-sloppy"}], repetitions=1,
+                   results_dir=tmp_path / "results")
+    by = {c.name: c for c in est.models}
+    assert by["m-good"].est_cost_usd == pytest.approx(0.03 * 2)    # mean cost x 2 calls
+    assert by["m-sloppy"].est_cost_usd is None                      # no reported cost -> no guess
+    assert est.subscriptions[0].est_cost_usd == pytest.approx(0.06)
+    assert any("list-price" in n for n in est.notes)

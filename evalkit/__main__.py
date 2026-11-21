@@ -43,12 +43,13 @@ def select_models(all_models: list[ModelSpec], names: set[str] | None) -> list[M
 def format_estimate(est: Estimate) -> str:
     lines = [f"{len(est.models)} competitors x {est.n_tasks} tasks x {est.repetitions} reps "
              f"({est.n_rubric_tasks} rubric-graded -> also sent to each judge)", "",
-             f"{'subscription':<16}{'answers':>9}{'judging':>9}{'total':>8}   est. tokens in/out"]
+             f"{'subscription':<16}{'answers':>9}{'judging':>9}{'total':>8}{'est. $':>9}   est. tokens in/out"]
     for s in est.subscriptions:
         tok = f"{s.est_input_tokens:,} / {s.est_output_tokens:,}" if s.est_input_tokens else "-"
         if s.models_without_history:
             tok += f"  (+{s.models_without_history} competitor(s) with no history)"
-        lines.append(f"{s.subscription:<16}{s.generation_calls:>9}{s.judge_calls:>9}{s.total_calls:>8}   {tok}")
+        usd = f"{s.est_cost_usd:.2f}" if s.est_cost_usd else "-"
+        lines.append(f"{s.subscription:<16}{s.generation_calls:>9}{s.judge_calls:>9}{s.total_calls:>8}{usd:>9}   {tok}")
     lines.append(f"{'TOTAL':<16}{'':>18}{est.total_calls:>8}")
     return "\n".join(lines + [""] + est.notes)
 
@@ -103,8 +104,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"tasks OK: {len(tasks)} -> {by_cat}")
         if not cfg.judges and any(g["type"] == "rubric" for t in tasks for g in t.graders):
             print("WARNING: rubric graders present but no judges configured")
-        if shutil.which("go") is None and any(g["type"] == "go_tests" for t in tasks for g in t.graders):
-            print("WARNING: go toolchain not found -> go_tests graders will be skipped (install Go 1.22+)")
+        for tool, grader, hint in (("go", "go_tests", "install Go 1.22+"), ("node", "node_tests", "install Node 22.6+")):
+            affected = [t.id for t in tasks if any(g["type"] == grader for g in t.graders)]
+            if shutil.which(tool) is None and affected:
+                print(f"WARNING: {tool} not found -> {len(affected)} task(s) can't be scored and are left out of "
+                      f"every model's score: {', '.join(affected)} ({hint})")
+        if missing := sorted({t.category for t in tasks} - set(cfg.category_weights)):
+            print(f"NOTE: categories without a weight (counted as 1): {missing}")
         n_pairs = len({t.pair for t in tasks if t.pair})
         if n_pairs:
             print(f"pairs: {n_pairs} EN/HE task pairs -> 'HE vs EN' column in the report")
@@ -135,6 +141,10 @@ def main(argv: list[str] | None = None) -> int:
     write_html(summary, run_dir / "report.html")
     write_csv(summary, run_dir / "summary.csv")
     print(f"\nreport: {run_dir / 'report.html'}")
+    flagged = [s for s in summary["task_signal"] if s["verdict"] != "separates"]
+    if flagged:
+        print(f"  ! {len(flagged)} task(s) don't separate the models: "
+              + ", ".join(f"{s['task']} ({s['verdict']})" for s in flagged))
     for i, p in enumerate(summary["models"], 1):
         if not p["empty"]:
             lo, hi = p["ci90"]
@@ -158,7 +168,8 @@ def _serve(args: argparse.Namespace) -> int:
               "can spend your subscription quota. There is no authentication.", file=sys.stderr)
         hosts = [*LOCAL_HOSTS, args.host]
     app = create_app(args.config, args.tasks_dir, allowed_hosts=hosts)
-    print(f"evalkit UI: http://{'localhost' if args.host == '127.0.0.1' else args.host}:{args.port}")
+    # 127.0.0.1, not "localhost": localhost often resolves to IPv6 ::1 first, where we don't listen.
+    print(f"evalkit UI: http://{args.host}:{args.port}")
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
     return 0
 

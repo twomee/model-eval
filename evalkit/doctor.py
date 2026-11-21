@@ -11,6 +11,7 @@ import asyncio
 from dataclasses import dataclass, replace
 
 from .config import Config, ModelSpec
+from .limits import Limits
 from .providers import ProviderError, Request, make_provider, manual_paths
 
 PING = "Reply with exactly the word OK and nothing else."
@@ -32,14 +33,15 @@ class Check:
     isolation: str | None = None   # None = not probed; "clean"; or "LEAK: <quoted text>"
 
 
-async def _check(spec: ModelSpec, role: str, cfg: Config, task_ids: list[str], probe: bool = False) -> Check:
+async def _check(spec: ModelSpec, role: str, cfg: Config, task_ids: list[str], limits: Limits,
+                 probe: bool = False) -> Check:
     if spec.provider == "manual":
         # Nothing to call; report how many pasted answers exist instead.
         have = sum(1 for t in task_ids if (p := manual_paths(spec.name, t)[1]).exists() and p.read_text().strip())
         return Check(spec.name, role, True, f"manual: {have}/{len(task_ids)} answers saved")
     settings = replace(cfg.run, max_retries=0, timeout_s=min(cfg.run.timeout_s, 120))
     try:
-        provider = make_provider(spec, settings)
+        provider = limits.wrap(spec, make_provider(spec, settings))
         comp = await provider.complete(Request(prompt=PING, max_tokens=50, temperature=0.0,
                                                meta={"task_id": "doctor", "reference": "OK"}))
     except ProviderError as e:
@@ -70,8 +72,10 @@ async def _probe_isolation(provider) -> str:
 async def run_doctor(cfg: Config, models: list[ModelSpec], task_ids: list[str],
                      probe_isolation: bool = False) -> list[Check]:
     # Different vendors in parallel (independent quotas); one call each (+1 with probe_isolation).
+    # Same caps as a real run: "Check all" must not fire 60+ CLI processes at once.
+    limits = Limits(cfg.run)
     jobs = [(m, "model") for m in models] + [(j, "judge") for j in cfg.judges]
-    return list(await asyncio.gather(*(_check(s, r, cfg, task_ids, probe_isolation) for s, r in jobs)))
+    return list(await asyncio.gather(*(_check(s, r, cfg, task_ids, limits, probe_isolation) for s, r in jobs)))
 
 
 def judge_vendors(cfg: Config, checks: list[Check]) -> set[str]:

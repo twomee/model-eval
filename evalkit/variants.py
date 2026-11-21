@@ -56,7 +56,7 @@ def _placeholders(value: Any) -> set[str]:
     return set()
 
 
-_SUBSTITUTED_FIELDS = ("command", "model", "params")
+_SUBSTITUTED_FIELDS = ("command", "model", "params", "isolated_home")  # home: per-variant config files
 
 
 def expand_variants(entry: dict[str, Any]) -> list[dict[str, Any]]:
@@ -72,6 +72,11 @@ def expand_variants(entry: dict[str, Any]) -> list[dict[str, Any]]:
         return [{**entry, "family": name, "default": True}]
     if not isinstance(variants, dict) or not all(isinstance(v, list) and v for v in variants.values()):
         raise ValueError(f"model {name}: `variants` must map each key to a non-empty list")
+    for k, vals in variants.items():
+        if bools := [v for v in vals if isinstance(v, bool)]:
+            # YAML 1.1 reads unquoted off/on/yes/no as booleans: `[off, high]` arrives as [False, "high"].
+            raise ValueError(f"model {name}: variants.{k} contains YAML boolean(s) {bools}: "
+                             "quote words like off/on/yes/no, e.g. [\"off\", high]")
     if unused := set(variants) - used:
         # Would create identical competitors under different names.
         raise ValueError(f"model {name}: variant keys {sorted(unused)} are not used as {{placeholders}}")

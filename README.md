@@ -109,7 +109,10 @@ evalkit/
 web/                 React + TS + Vite UI: services/api.ts -> hooks/ (state) -> components/ (rendering)
   providers.py       one adapter per vendor behind a single interface: complete(Request) -> Completion
                      anthropic | openai_compat | cli | manual | mock
-  graders.py         python_tests, go_tests (execute tests) | match (regex) | length, language (constraints) | rubric (LLM-as-judge)
+  graders.py         python_tests, go_tests, node_tests (execute code) | answer_tests (pytest over the raw answer:
+                     structured output, format rules) | match (regex) | length, language (constraints) | rubric (LLM-as-judge)
+  limits.py          concurrency caps: global, per subscription (what vendors rate-limit), per model
+  procs.py           subprocesses with timeouts that kill the whole process tree (agentic CLIs spawn children)
   runner.py          generate -> generations.jsonl, grade -> grades.jsonl  (two stages, resumable)
   report.py          weighted score, bootstrap CI, latency, cost, per-answer drill-down
 ```
@@ -123,12 +126,18 @@ web/                 React + TS + Vite UI: services/api.ts -> hooks/ (state) -> 
 - **Overall = mean of category means, not of tasks.** Otherwise the category you wrote the most tasks for silently dominates.
 - **EN/HE twins inherit graders (`twin_of`).** One source of truth: fix a test once and both languages get it, so the only variable in the comparison is the language.
 - **Golden test over every task.** A broken test or regex punishes all models equally and never shows on the leaderboard. CI fails if any reference answer doesn't pass its own deterministic graders.
+- **Wrong answers are tested too (`wrong_answers`).** The golden test proves a reference passes; it can't prove the
+  tests can *fail*. Each `wrong_answers` entry is a plausible mistake that the deterministic graders must reject.
+- **Model-written code never sees your environment.** Graders run it with a minimal env (PATH, locale, HOME = a temp
+  dir): API keys and tokens in your shell are invisible to it, so it can't print them into an answer.
 - **Go concurrency tasks run with `-race`.** A detected data race scores 0 even if the assertions happened to pass. Failures are labelled (build failed / deadlock / panic / race), because each points to a different fix.
 
 ## Reading the report
 - **CI 90%** — if two models' intervals overlap heavily, the eval can't separate them yet. Add tasks; don't crown a winner.
 - **HE vs EN** — mean score change on the *same task* in Hebrew vs English. Negative = the model gets worse when you work in Hebrew. With only a few pairs this is noisy: treat it as a signal to investigate, and add pairs before trusting it.
 - **Inconsistency** — std-dev across repetitions. A slightly lower but more predictable model may be the better choice.
+- **Task signal** — tasks every model aces (all ≥ 0.95, *too easy*) add nothing to the decision; replace them.
+  Tasks nobody passes (all ≤ 0.05) are more likely broken than hard: check the reference. Also printed after `run`.
 - **Judge spread** (in the drill-down) — large disagreement between judges usually means a vague rubric, not a borderline answer.
 - **Always read the answers yourself.** The score is a filter, not the truth.
 
@@ -136,18 +145,22 @@ web/                 React + TS + Vite UI: services/api.ts -> hooks/ (state) -> 
 1. **A CLI is not a clean model.** Claude Code, Codex and Gemini CLI add their own system prompts. By default they also load *your* setup — Claude Code reads `~/.claude/CLAUDE.md` (a mentoring-style CLAUDE.md visibly changes answers, e.g. appending "something to think about…" questions), and Codex always loads `~/.codex/AGENTS.md` plus `config.toml` (model, sandbox) — no flag skips AGENTS.md. `config.yaml` strips this: `--safe-mode --tools ""` for Claude; for Codex an `isolated_home` (a clean `CODEX_HOME` containing only a symlink to your login) plus `-s read-only` and pins model ids so a CLI update doesn't silently swap the model. A residual vendor system prompt remains; that is "the tool as you use it".
 2. **Self-preference bias.** A judge tends to prefer answers from its own model family, hence a two-vendor judge panel. `validate` warns when the same model both competes and judges.
 3. **Model-written code runs on your machine** — inside a subprocess with a timeout. That protects against accidents, not malice. For unfamiliar models, run inside Docker.
-4. **Subscription rate limits.** Default concurrency is 1 per CLI. If you hit a limit, wait and re-run; resume continues where it stopped.
+4. **Subscription rate limits.** At most `run.subscription_concurrency` (default 2) calls per subscription at a time,
+   `run.concurrency` overall. If you hit a limit, wait and re-run; resume continues where it stopped.
 5. **Contamination.** Tasks that exist publicly may have been seen in training. Tasks from your own work avoid this.
 
 ## The most important step: replace my tasks with yours
-The 22 tasks here (6 backend code incl. 2 Go, 4 debugging, 4 system design, 5 general, 3 Hebrew writing; 4 of them have Hebrew twins) are examples that demonstrate each grader type. A trustworthy eval needs **15–30 tasks from your real work**:
+The 26 tasks here (7 backend code incl. 2 Go and 1 SQL, 5 debugging incl. a security fix, 4 system design,
+6 general incl. strict JSON output, 1 TypeScript, 3 Hebrew writing; 4 have Hebrew twins) demonstrate each grader
+type. `tasks/edge_cases.yaml` shows the pattern to copy: a task built around the edge cases weak models get wrong. A trustworthy eval needs **15–30 tasks from your real work**:
 - a real bug you fixed this month, plus the test that catches it;
 - a design question you agonized over, plus the trade-offs that decided it;
 - an email or document you actually sent, in the language you actually write in.
 
 **Rule:** a good task is one a weak model fails. If every model scores 1.0, the task adds nothing to the decision.
 
-Workflow for a new task: write it, run `python -m pytest` (the golden test proves your reference passes your graders), then run it against models.
+Workflow for a new task: write it with 1-2 `wrong_answers`, run `python -m pytest` (the golden test proves the
+reference passes AND the wrong answers fail), run it against models, then check the report's **Task signal**.
 
 ### New task template
 ```yaml
@@ -155,10 +168,13 @@ Workflow for a new task: write it, run `python -m pytest` (the golden test prove
   category: backend_code          # or a new category (then give it a weight in config)
   prompt: |
     ...
-  reference: |                    # optional — shows the judge what "good" looks like
+  reference: |                    # shows the judge what "good" looks like; must pass the deterministic graders
     ...
+  wrong_answers:                  # plausible mistakes; each must FAIL the deterministic graders
+    - |
+      ...
   graders:
-    - type: python_tests          # or go_tests / match / length / language / rubric
+    - type: python_tests          # or go_tests / node_tests / answer_tests / match / length / language / rubric
       weight: 2
       tests: |
         from solution import ...

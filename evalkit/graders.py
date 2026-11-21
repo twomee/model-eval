@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from . import procs
 from .config import ModelSpec, RunSettings, Task
 from .providers import Provider, ProviderError, Request
 
@@ -35,6 +36,19 @@ class GradeResult:
 class GradingContext:
     settings: RunSettings
     judges: list[tuple[ModelSpec, Provider]]
+
+
+# --------------------------------------------------------------------------- sandbox env
+
+# What model-written code may see. Your shell environment holds API keys and tokens; code a
+# model wrote must not be able to read them (and print them into an answer that gets sent on).
+_PASSTHROUGH = ("PATH", "LANG", "LC_ALL", "TZ", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT")
+
+
+def sandbox_env(workdir: str) -> dict[str, str]:
+    env = {k: os.environ[k] for k in _PASSTHROUGH if k in os.environ}
+    env.update(HOME=workdir, TMPDIR=workdir, TEMP=workdir, TMP=workdir, PYTHONDONTWRITEBYTECODE="1")
+    return env
 
 
 # --------------------------------------------------------------------------- python_tests
@@ -57,19 +71,83 @@ async def grade_python_tests(task: Task, answer: str, cfg: dict, ctx: GradingCon
     with tempfile.TemporaryDirectory(prefix="evalkit-tests-") as d:
         Path(d, "solution.py").write_text(code, encoding="utf-8")
         Path(d, "test_solution.py").write_text(cfg["tests"], encoding="utf-8")
-        proc = await asyncio.create_subprocess_exec(
-            sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--tb=line", "test_solution.py",
-            cwd=d, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
         try:
-            out, _ = await asyncio.wait_for(proc.communicate(), timeout=ctx.settings.code_timeout_s)
-        except asyncio.TimeoutError:
-            proc.kill()
+            _, out, _ = await procs.run(
+                [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--tb=line", "test_solution.py"],
+                cwd=d, env=sandbox_env(d), stderr=asyncio.subprocess.STDOUT, timeout=ctx.settings.code_timeout_s)
+        except asyncio.TimeoutError:  # procs.run killed pytest and anything the code spawned
             return GradeResult("python_tests", 0.0, details={"error": "timeout (infinite loop?)"})
     text = out.decode(errors="replace")
-    counts = {k: int(n) for n, k in re.findall(r"(\d+) (passed|failed|error)", text)}
+    counts = _pytest_counts(text)
     total = sum(counts.values())
     score = counts.get("passed", 0) / total if total else 0.0
     return GradeResult("python_tests", score, details={"counts": counts, "output_tail": text[-800:]})
+
+
+def _pytest_counts(text: str) -> dict[str, int]:
+    return {k: int(n) for n, k in re.findall(r"(\d+) (passed|failed|error)", text)}
+
+
+# --------------------------------------------------------------------------- answer_tests
+
+async def grade_answer_tests(task: Task, answer: str, cfg: dict, ctx: GradingContext) -> GradeResult:
+    """pytest tests over the RAW answer text (answer.md in the test's working dir).
+
+    For checks that aren't "run the code": structured output ("exactly this JSON"), format
+    rules, required facts. Tests read it with: ANSWER = Path("answer.md").read_text()
+    """
+    with tempfile.TemporaryDirectory(prefix="evalkit-answer-") as d:
+        Path(d, "answer.md").write_text(answer, encoding="utf-8")
+        Path(d, "test_answer.py").write_text(cfg["tests"], encoding="utf-8")
+        try:
+            _, out, _ = await procs.run(
+                [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--tb=line", "test_answer.py"],
+                cwd=d, env=sandbox_env(d), stderr=asyncio.subprocess.STDOUT, timeout=ctx.settings.code_timeout_s)
+        except asyncio.TimeoutError:
+            return GradeResult("answer_tests", 0.0, details={"error": "timeout"})
+    text = out.decode(errors="replace")
+    counts = _pytest_counts(text)
+    total = sum(counts.values())
+    return GradeResult("answer_tests", counts.get("passed", 0) / total if total else 0.0,
+                       details={"counts": counts, "output_tail": text[-800:]})
+
+
+# --------------------------------------------------------------------------- node_tests
+
+_TS_BLOCK = re.compile(r"```(?:ts|typescript|js|javascript|tsx)?[ \t]*\n(.*?)```", re.S)
+
+
+def extract_ts(answer: str) -> str | None:
+    # Prefer a block that exports something (the module), else the longest block.
+    blocks = [b for b in _TS_BLOCK.findall(answer) if b.strip()]
+    exporting = [b for b in blocks if re.search(r"^\s*export\b", b, re.M)]
+    return max(exporting or blocks, key=len) if blocks else None
+
+
+async def grade_node_tests(task: Task, answer: str, cfg: dict, ctx: GradingContext) -> GradeResult:
+    """TypeScript/JavaScript via Node's built-in runner (`node --test`; Node >= 22.6 strips types)."""
+    if shutil.which("node") is None:
+        return GradeResult("node_tests", None, details={"error": "node not installed"})  # not the model's fault
+    code = extract_ts(answer)
+    if code is None:
+        return GradeResult("node_tests", 0.0, details={"error": "no ts/js code block"})
+    with tempfile.TemporaryDirectory(prefix="evalkit-node-") as d:
+        Path(d, "solution.ts").write_text(code, encoding="utf-8")
+        Path(d, "solution.test.ts").write_text(cfg["tests"], encoding="utf-8")
+        Path(d, "package.json").write_text('{"type": "module"}', encoding="utf-8")
+        try:
+            _, out, _ = await procs.run(["node", "--test", "solution.test.ts"], cwd=d, env=sandbox_env(d),
+                                        stderr=asyncio.subprocess.STDOUT, timeout=ctx.settings.code_timeout_s)
+        except asyncio.TimeoutError:
+            return GradeResult("node_tests", 0.0, details={"error": "timeout (infinite loop?)"})
+    text = out.decode(errors="replace")
+    passed = int(m.group(1)) if (m := re.search(r"^# pass (\d+)", text, re.M)) else 0
+    failed = int(m.group(1)) if (m := re.search(r"^# fail (\d+)", text, re.M)) else 0
+    total = passed + failed
+    if total == 0:  # syntax error in the module: the test file never got to run a test
+        return GradeResult("node_tests", 0.0, details={"error": "no tests ran", "output_tail": text[-800:]})
+    return GradeResult("node_tests", passed / total,
+                       details={"counts": {"passed": passed, "failed": failed}, "output_tail": text[-800:]})
 
 
 # --------------------------------------------------------------------------- go_tests
@@ -98,14 +176,16 @@ async def grade_go_tests(task: Task, answer: str, cfg: dict, ctx: GradingContext
         args = ["go", "test", "-v", "-count=1", "-timeout", f"{int(ctx.settings.code_timeout_s)}s"]
         if cfg.get("race"):  # concurrency tasks: the race detector IS the test
             args.append("-race")
-        proc = await asyncio.create_subprocess_exec(
-            *args, ".", cwd=d, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-            env={**os.environ, "GOFLAGS": "-mod=mod", "GOTOOLCHAIN": "local"})
+        env = {**sandbox_env(d), "GOFLAGS": "-mod=mod", "GOTOOLCHAIN": "local",
+               # keep the build cache (speed) - paths only, no secrets
+               "GOCACHE": os.environ.get("GOCACHE", str(Path.home() / ".cache" / "go-build")),
+               "GOPATH": os.environ.get("GOPATH", str(Path.home() / "go")),
+               **({"GOROOT": os.environ["GOROOT"]} if "GOROOT" in os.environ else {})}
         try:
             # compile time is real time: give go a bit more than the test timeout
-            out, _ = await asyncio.wait_for(proc.communicate(), timeout=ctx.settings.code_timeout_s + 60)
+            _, out, _ = await procs.run([*args, "."], cwd=d, env=env, stderr=asyncio.subprocess.STDOUT,
+                                        timeout=ctx.settings.code_timeout_s + 60)
         except asyncio.TimeoutError:
-            proc.kill()
             return GradeResult("go_tests", 0.0, details={"error": "timeout"})
     text = out.decode(errors="replace")
     # count top-level tests only (subtests are indented)
@@ -240,6 +320,8 @@ CONSTRAINTS = {"length", "language"}
 
 GRADERS = {
     "python_tests": grade_python_tests,
+    "answer_tests": grade_answer_tests,
+    "node_tests": grade_node_tests,
     "go_tests": grade_go_tests,
     "match": grade_match,
     "length": grade_length,
