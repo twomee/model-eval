@@ -175,7 +175,10 @@ async def grade_all(cfg: Config, tasks: list[Task], run_dir: Path, regrade: bool
                          "category": g["category"], "rep": g["rep"], "score": score,
                          "parts": [asdict(p) for p in parts]})
         s = "n/a" if score is None else f"{score:.2f}"
-        progress.item("grade", g["model"], g["task_id"], g["rep"], f"score={s}", score is None)
+        # score None = the grader couldn't run (e.g. Go not installed): left out of the score, and
+        # not the model's failure, so it isn't reported as one.
+        detail = f"score={s}" if score is not None else "not scored (grader couldn't run, e.g. toolchain missing)"
+        progress.item("grade", g["model"], g["task_id"], g["rep"], detail, False)
 
     await asyncio.gather(*(run_one(g) for g in todo))
 
