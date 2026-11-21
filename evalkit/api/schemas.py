@@ -185,8 +185,15 @@ class StageOut(BaseModel):
     already_done: int = Field(description="finished in an earlier run of the same name (resumed)")
 
 
+class PausedOut(BaseModel):
+    subscription: str
+    until: float = Field(description="unix time when its calls are re-checked")
+    reason: str
+
+
 class JobOut(BaseModel):
     run_name: str
+    paused: list[PausedOut] = Field(default_factory=list, description="subscriptions waiting for a quota reset")
     status: JobStatus
     models: list[str]
     n_tasks: int

@@ -15,6 +15,8 @@ interface Props {
 
 const STAGE_LABELS: Record<string, string> = { generate: 'Answers', grade: 'Grading', report: 'Report' }
 
+const clock = (unix: number) => new Date(unix * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+
 function StageBar({ name, s }: { name: string; s: StageProgress }) {
   const pct = s.total ? Math.round((100 * s.done) / s.total) : 100
   return (
@@ -59,6 +61,13 @@ export function RunPanel({ estimate, job, starting, error, onStart, onCancel, fa
             <strong>Running “{job.run_name}”</strong>: {job.models.length} models × {job.n_tasks} tasks ×{' '}
             {job.repetitions} reps. You can close this tab: the run continues on the server.
           </p>
+          {job.paused.map((p) => (
+            <div key={p.subscription} className="alert alert-warn paused">
+              ⏸ <strong>{p.subscription}</strong> is out of quota: its calls wait until about{' '}
+              <strong>{clock(p.until)}</strong>, then continue by themselves. Other subscriptions keep running.
+              <div><small className="muted">{p.reason}</small></div>
+            </div>
+          ))}
           {Object.entries(job.stages).map(([name, s]) => <StageBar key={name} name={name} s={s} />)}
           <RunSelection job={job} families={families} onUse={onUseRunSelection} />
           <button type="button" onClick={onCancel}>Cancel run</button>

@@ -34,7 +34,7 @@ function estimateFor(req: EstimateRequest): EstimateResponse {
 
 function job(over: Partial<Job> = {}): Job {
   return {
-    run_name: 'v1', status: 'running', models: ['claude-opus-medium'], n_tasks: 10, repetitions: 1,
+    run_name: 'v1', status: 'running', paused: [], models: ['claude-opus-medium'], n_tasks: 10, repetitions: 1,
     stage: 'generate', stages: { generate: { total: 10, done: 4, failed: 1, already_done: 0 } },
     recent: [], error: null, started_at: 0, finished_at: null, results_url: '#results/v1', ...over,
   }
@@ -179,5 +179,19 @@ describe('the running run is shown with its own selection', () => {
     expect(screen.getByLabelText(/claude-opus efforts: high/)).toBeInTheDocument()
     expect(screen.getByLabelText(/glm efforts: all \(2\)/)).toBeInTheDocument()
     expect(screen.getByRole('spinbutton', { name: /Repetitions/ })).toHaveValue(3)
+  })
+})
+
+
+describe('quota pauses', () => {
+  it('shows a subscription waiting for its reset, while the run keeps going', async () => {
+    const until = new Date(2026, 10, 21, 21, 16).getTime() / 1000
+    const running = job({ paused: [{ subscription: 'openai', until, reason: "You've hit your usage limit ... try again at 9:15 PM." }] })
+    render(<PlanPage client={fakeClient({}, running)} />)
+    const pause = await screen.findByText(/is out of quota/)
+    expect(pause.closest('.paused')).toHaveTextContent('openai')
+    expect(pause.closest('.paused')).toHaveTextContent('21:16')
+    expect(pause.closest('.paused')).toHaveTextContent('Other subscriptions keep running')
+    expect(screen.getByRole('button', { name: 'Cancel run' })).toBeInTheDocument()   // still a running run
   })
 })

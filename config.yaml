@@ -20,6 +20,10 @@ run:
   repetitions: 3        # same prompt N times -> measures consistency, smooths luck. manual is always 1.
   concurrency: 8        # global cap on calls in flight (machine load); 4 subscriptions x 2 each
   subscription_concurrency: 2   # per CLI login: what vendors rate-limit; 1 per model on top
+  on_quota: wait        # a subscription out of quota (e.g. its 5-hour window): its calls WAIT for the reset
+                        # (time read from the error, else re-checked every 15 min), other subscriptions
+                        # continue. "fail" = give up at once and fill in later with another run.
+  quota_max_wait_h: 8   # stop waiting after this
   temperature: 0.0      # ignored by CLIs
   max_tokens: 4096
   timeout_s: 300

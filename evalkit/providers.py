@@ -53,11 +53,44 @@ class Completion:
 # backoff per call. Seen in a real run: grading crawled at ~1 answer per 2.5 min this way.
 _QUOTA = re.compile(r"usage limit|hit your (usage )?limit|purchase more credits|requires usage credits|"
                     r"out of (credits|quota)|quota (exceeded|exhausted)|insufficient (credits|quota)|"
-                    r"resource.?exhausted", re.I)
+                    r"resource.?exhausted|\d+-hour limit reached|limit reached", re.I)
 
 
 def is_quota_message(msg: str) -> bool:
     return bool(_QUOTA.search(msg))
+
+
+_EPOCH = re.compile(r"\|\s*(\d{10})\b")                                   # claude: "...limit reached|1795290000"
+_CLOCK = re.compile(r"(?:try again at|resets?(?: at)?|available at|until)\s+"
+                    r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", re.I)             # "try again at 9:15 PM", "resets 7pm", "resets at 19:00"
+_RELATIVE = re.compile(r"(?:in|after)\s+(?:(\d+)\s*h(?:ours?)?)?\s*(?:(\d+)\s*m(?:in(?:ute)?s?)?)?", re.I)
+
+
+def quota_reset_at(msg: str, now: float | None = None) -> float | None:
+    """When a usage limit resets, as a unix time, if the message says so. None = unknown (the
+    caller then re-checks periodically). Clock times are local and the NEXT occurrence: at
+    20:30, "9:15 PM" is today 21:15, while "7pm" means tomorrow 19:00."""
+    import datetime as dt
+    now = time.time() if now is None else now
+    if m := _EPOCH.search(msg):
+        return float(m.group(1))
+    if m := _CLOCK.search(msg):
+        hour, minute, ampm = int(m.group(1)), int(m.group(2) or 0), (m.group(3) or "").lower()
+        if ampm == "pm" and hour < 12:
+            hour += 12
+        elif ampm == "am" and hour == 12:
+            hour = 0
+        if hour > 23 or minute > 59:
+            return None
+        base = dt.datetime.fromtimestamp(now)
+        at = base.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if at.timestamp() <= now:
+            at += dt.timedelta(days=1)
+        return at.timestamp()
+    for m in _RELATIVE.finditer(msg):
+        if m.group(1) or m.group(2):
+            return now + int(m.group(1) or 0) * 3600 + int(m.group(2) or 0) * 60
+    return None
 
 
 class ProviderError(Exception):

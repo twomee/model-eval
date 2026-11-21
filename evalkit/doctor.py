@@ -39,7 +39,7 @@ async def _check(spec: ModelSpec, role: str, cfg: Config, task_ids: list[str], l
         # Nothing to call; report how many pasted answers exist instead.
         have = sum(1 for t in task_ids if (p := manual_paths(spec.name, t)[1]).exists() and p.read_text().strip())
         return Check(spec.name, role, True, f"manual: {have}/{len(task_ids)} answers saved")
-    settings = replace(cfg.run, max_retries=0, timeout_s=min(cfg.run.timeout_s, 120))
+    settings = replace(cfg.run, max_retries=0, timeout_s=min(cfg.run.timeout_s, 120), on_quota="fail")
     try:
         provider = limits.wrap(spec, make_provider(spec, settings))
         comp = await provider.complete(Request(prompt=PING, max_tokens=50, temperature=0.0,
@@ -73,7 +73,7 @@ async def run_doctor(cfg: Config, models: list[ModelSpec], task_ids: list[str],
                      probe_isolation: bool = False) -> list[Check]:
     # Different vendors in parallel (independent quotas); one call each (+1 with probe_isolation).
     # Same caps as a real run: "Check all" must not fire 60+ CLI processes at once.
-    limits = Limits(cfg.run)
+    limits = Limits(replace(cfg.run, on_quota="fail"))   # a health check reports, it doesn't wait hours
     jobs = [(m, "model") for m in models] + [(j, "judge") for j in cfg.judges]
     return list(await asyncio.gather(*(_check(s, r, cfg, task_ids, limits, probe_isolation) for s, r in jobs)))
 
