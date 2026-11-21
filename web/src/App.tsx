@@ -1,17 +1,39 @@
+import { useEffect, useState } from 'react'
 import { ModelsPage } from './pages/ModelsPage'
+import { PlanPage } from './pages/PlanPage'
 import { api } from './services/api'
 
+const PAGES = { models: 'Models', plan: 'Plan run' } as const
+type Page = keyof typeof PAGES
+
+// The page lives in the URL hash (#plan): reload and back/forward keep you where you were,
+// without a router dependency for two pages.
+function pageFromHash(): Page {
+  const h = window.location.hash.slice(1)
+  return h in PAGES ? (h as Page) : 'models'
+}
+
 export default function App() {
+  const [page, setPage] = useState<Page>(pageFromHash)
+
+  useEffect(() => {
+    const onHash = () => setPage(pageFromHash())
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [])
+
   return (
     <div className="app">
       <header>
         <h1>evalkit</h1>
         <nav aria-label="main">
-          <span aria-current="page">Models</span>
+          {(Object.keys(PAGES) as Page[]).map((p) => (
+            <a key={p} href={`#${p}`} aria-current={p === page ? 'page' : undefined}>{PAGES[p]}</a>
+          ))}
         </nav>
       </header>
       <main>
-        <ModelsPage client={api} />
+        {page === 'models' ? <ModelsPage client={api} /> : <PlanPage client={api} />}
       </main>
     </div>
   )

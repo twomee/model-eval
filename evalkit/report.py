@@ -76,6 +76,8 @@ def build_summary(cfg: Config, run_dir: Path, tasks: list[Task] | None = None) -
         m = spec.name
         g_ok = [g for g in gens.values() if g["model"] == m and not g.get("error")]
         g_err = [g for g in gens.values() if g["model"] == m and g.get("error")]
+        if not g_ok and not g_err:
+            continue  # configured but not part of this run (e.g. a non-default effort)
         scores_by_task: dict[str, list[float]] = defaultdict(list)
         for r in grades.values():
             if r["model"] == m and r["score"] is not None:

@@ -35,6 +35,8 @@ class ModelSpec:
     isolated_home: dict[str, Any] | None = None
     timeout_s: float | None = None  # per-model override of run.timeout_s (high effort thinks longer)
     variant: dict[str, str] = field(default_factory=dict)  # e.g. {"effort": "high"} - see variants.py
+    family: str = ""                # config entry the variant came from ("gpt-sol" for gpt-sol-high)
+    default: bool = True            # part of a plain `run` (no --models)? see `defaults` in variants.py
 
     @property
     def model_id(self) -> str | None:
@@ -46,6 +48,19 @@ class ModelSpec:
             if flag in self.command[:-1]:
                 return self.command[self.command.index(flag) + 1]
         return None
+
+    @property
+    def subscription(self) -> str:
+        """Whose quota a call spends. CLIs bill the subscription they're logged into (agy serves
+        gpt-oss on your GOOGLE plan); APIs bill their endpoint; manual is your own time."""
+        if self.provider == "cli" and self.command:
+            cli = Path(self.command[0]).name
+            return {"codex": "openai", "agy": "google", "claude": "claude"}.get(cli, cli)
+        if self.provider == "anthropic":
+            return "anthropic-api"
+        if self.provider == "manual":
+            return "manual"
+        return self.base_url or self.provider
 
     @property
     def effort(self) -> str | None:
@@ -121,6 +136,8 @@ def _model_from_dict(d: dict[str, Any]) -> ModelSpec:
         isolated_home=d.get("isolated_home"),
         timeout_s=d.get("timeout_s"),
         variant=d.get("variant") or {},
+        family=d.get("family") or d["name"],
+        default=d.get("default", True),
     )
 
 

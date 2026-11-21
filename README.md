@@ -43,13 +43,22 @@ One config entry can expand into several competitors:
 - **Validated at load time,** because the CLIs don't: `claude --effort bogus` silently uses the default, and
   codex accepts efforts a model doesn't support (checked against `~/.codex/models_cache.json`).
 
+### Will my subscription quota last? (Plan run)
+Subscriptions limit **messages per time window**, not tokens, and no CLI reports what's left. So the
+planner (`serve` → **Plan run**, or `run --dry-run`) shows the exact **calls per subscription** for your
+selection, with tokens estimated from earlier runs. Pick models × efforts with the dropdowns ("All" per
+model, or "All efforts, all models"), categories and repetitions; it gives you the `run` command.
+- **Judging is usually the biggest cost.** Every rubric-graded answer goes to every judge and is charged
+  to the *judge's* subscription. A cheap first pass: `--repetitions 1`, or comment out one judge.
+- **Running out is safe:** runs resume where they stopped. Wait for the window to reset and run again.
+
 ### Web UI (local, any OS)
 ```bash
 cd web && npm ci && npm run build && cd ..   # once, and after UI changes (needs Node 20+)
 python -m evalkit serve                     # open http://localhost:8765
 ```
-Currently: the **Models** screen: every competitor and judge, which model id actually runs, and a
-one-click health check (same as `doctor`). UI development: run `serve`, then `npm run dev` in `web/`
+Screens: **Models** (every competitor and judge, the model id and effort that actually run, one-click
+health checks, same as `doctor`) and **Plan run** (pick models × efforts, see the cost, copy the command). UI development: run `serve`, then `npm run dev` in `web/`
 (hot reload, proxies `/api` to the server).
 
 **Why a local server, not a hosted site:** models run through CLIs logged in on *your* machine;
@@ -79,7 +88,9 @@ Tip: open a fresh conversation per prompt so earlier context doesn't leak into t
 ### Useful commands
 | Command | What it does |
 |---|---|
-| `run --models claude,gemini` | only a subset of models |
+| `run --dry-run` | calls per subscription (answers + judging), calls nothing |
+| `run --models gpt-sol,claude-opus-high` | a family name = all its efforts; `all` = everything; default = `defaults` only |
+| `run --repetitions 1` | cheap first pass (manual is always 1) |
 | `run --category backend_code` | only one category |
 | `grade --run v1 --regrade` | re-grade without regenerating answers (after changing a rubric) |
 | `report --run v1` | rebuild the report |

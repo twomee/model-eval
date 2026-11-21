@@ -35,10 +35,11 @@ class ModelsService:
 
     async def doctor(self, names: list[str]) -> DoctorOut:
         cfg = self._config()
+        # No names = the defaults + all judges, the same as `evalkit doctor` without --models.
         wanted = set(names)
         if unknown := wanted - {s.name for s in (*cfg.models, *cfg.judges)}:
             raise UnknownModelsError(unknown)
-        models = [m for m in cfg.models if not wanted or m.name in wanted]
+        models = [m for m in cfg.models if (m.name in wanted if wanted else m.default)]
         judges = [j for j in cfg.judges if not wanted or j.name in wanted]
         cfg_subset = Config(run=cfg.run, models=models, judges=judges, category_weights=cfg.category_weights)
         task_ids = [t.id for t in load_tasks(self.tasks_dir)]

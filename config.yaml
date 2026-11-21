@@ -36,8 +36,11 @@ models:
   # ---------- subscriptions via official CLIs ----------
   #
   # LINEUP STRATEGY (a funnel, not a grid): every model x every effort is ~75 competitors x 66 calls.
-  #   Stage 1 (below): every CURRENT-generation model at one everyday effort -> find the top 2-3.
-  #   Stage 2: sweep effort only on those, e.g. variants: {effort: [low, medium, high, xhigh]}.
+  #   Stage 1: every CURRENT-generation model at one everyday effort -> find the top 2-3.
+  #   Stage 2: sweep effort only on those.
+  # `variants` = every effort that EXISTS (the UI planner offers them all); `defaults` = what a plain
+  # `run` uses. Pick others with --models (a family name like gpt-sol = all its efforts, or `all`),
+  # or in the UI: python -m evalkit serve -> Plan run. Check the cost first: run --dry-run.
   # Legacy / previous-generation GPT models are left out: you'd never pick one over its successor.
   #
   # EFFORT: always pin it. Unpinned, codex in an isolated home runs with reasoning effort "none",
@@ -55,21 +58,27 @@ models:
     command: ["claude", "-p", "--output-format", "json", "--safe-mode", "--tools", "",
               "--no-session-persistence", "--model", "claude-opus-5-5", "--effort", "{effort}"]
     parse: claude_json
-    variants: {effort: [medium]}
+    variants: {effort: [low, medium, high, xhigh, max]}
+    defaults: {effort: [medium]}
+    timeout_s: 900
 
   - name: claude-sonnet
     provider: cli
     command: ["claude", "-p", "--output-format", "json", "--safe-mode", "--tools", "",
               "--no-session-persistence", "--model", "claude-sonnet-5-5", "--effort", "{effort}"]
     parse: claude_json
-    variants: {effort: [medium]}
+    variants: {effort: [low, medium, high, xhigh, max]}
+    defaults: {effort: [medium]}
+    timeout_s: 900
 
   - name: claude-haiku
     provider: cli
     command: ["claude", "-p", "--output-format", "json", "--safe-mode", "--tools", "",
               "--no-session-persistence", "--model", "claude-haiku-5-5", "--effort", "{effort}"]
     parse: claude_json
-    variants: {effort: [medium]}
+    variants: {effort: [low, medium, high, xhigh, max]}
+    defaults: {effort: [medium]}
+    timeout_s: 900
 
   # Needs usage credits on top of the subscription ("Fable 5.2 requires usage credits").
   # - name: claude-fable
@@ -89,10 +98,9 @@ models:
               "-m", "gpt-6.2-sol", "-c", 'model_reasoning_effort="{effort}"', "{prompt}"]
     parse: codex_jsonl
     isolated_home: &codex_home {env: CODEX_HOME, dir: ~/.cache/evalkit/codex-home, link: [~/.codex/auth.json]}
-    variants: {effort: [medium]}
-    # Stage 2 example:
-    # variants: {effort: [low, medium, high, xhigh]}
-    # timeout_s: 900
+    variants: {effort: [low, medium, high, xhigh, max, ultra]}
+    defaults: {effort: [medium]}
+    timeout_s: 900
 
   - name: gpt-astra          # "most capable model for complex coding and professional work"
     provider: cli
@@ -100,7 +108,9 @@ models:
               "-m", "gpt-6.2-astra", "-c", 'model_reasoning_effort="{effort}"', "{prompt}"]
     parse: codex_jsonl
     isolated_home: *codex_home
-    variants: {effort: [medium]}
+    variants: {effort: [low, medium, high, xhigh, max, ultra]}
+    defaults: {effort: [medium]}
+    timeout_s: 900
 
   - name: gpt-terra          # "efficient; excels at visual understanding and computer use"
     provider: cli
@@ -108,7 +118,9 @@ models:
               "-m", "gpt-6.1-terra", "-c", 'model_reasoning_effort="{effort}"', "{prompt}"]
     parse: codex_jsonl
     isolated_home: *codex_home
-    variants: {effort: [medium]}
+    variants: {effort: [low, medium, high, xhigh, max, ultra]}
+    defaults: {effort: [medium]}
+    timeout_s: 900
 
   - name: gpt-luna           # "fast and affordable model for easier tasks"
     provider: cli
@@ -116,7 +128,9 @@ models:
               "-m", "gpt-6-luna", "-c", 'model_reasoning_effort="{effort}"', "{prompt}"]
     parse: codex_jsonl
     isolated_home: *codex_home
-    variants: {effort: [medium]}
+    variants: {effort: [low, medium, high, xhigh, max]}
+    defaults: {effort: [medium]}
+    timeout_s: 900
 
   # Gemini via the Antigravity CLI on your Google AI Pro subscription.
   # Setup (once): install agy (https://antigravity.google/docs/install), run `agy` interactively and
@@ -156,7 +170,8 @@ models:
     command: ["agy", "-p", "{prompt}", "--output-format", "json", "--disable-slash-commands", "--sandbox",
               "--model", "gemini-3.8-flash-{effort}"]
     parse: agy_json
-    variants: {effort: [medium]}
+    variants: {effort: [low, medium, high]}
+    defaults: {effort: [medium]}
 
   # OpenAI's open-weight model, served through Antigravity: a different model than codex's GPTs.
   - name: gpt-oss
