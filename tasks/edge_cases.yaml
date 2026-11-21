@@ -253,9 +253,11 @@
             assert get_report(conn, 1, "q3.txt", reports) == "Q3 numbers"
 
 
-        def test_owner_check_kept(env):
+        def test_non_owner_is_denied(env):
+            # Either denial is fine: FileNotFoundError is arguably better (doesn't reveal the file
+            # exists). The prompt only fixes behaviour for LEGITIMATE requests; this isn't one.
             conn, reports = env
-            with pytest.raises(PermissionError):
+            with pytest.raises((PermissionError, FileNotFoundError)):
                 get_report(conn, 2, "q3.txt", reports)
 
 
