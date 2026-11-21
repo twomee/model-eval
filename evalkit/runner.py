@@ -55,9 +55,21 @@ def _key(model: str, task: Task, rep: int) -> str:
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
+    """Records of a JSONL file. The LAST line may be half-written (grading reads the answers file
+    while generation is still appending, or a crash cut a write short): it is skipped. A broken
+    line anywhere else is real corruption and raises."""
     if not path.exists():
         return []
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    out = []
+    for i, line in enumerate(lines):
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            if i == len(lines) - 1:
+                continue
+            raise
+    return out
 
 
 class _Appender:
@@ -81,12 +93,12 @@ def _limited(spec: ModelSpec, cfg: Config, limits: Limits | None = None) -> Prov
 
 
 async def generate(cfg: Config, tasks: list[Task], run_dir: Path, models: Iterable[ModelSpec],
-                   progress: Progress | None = None) -> None:
+                   progress: Progress | None = None, limits: Limits | None = None) -> None:
     progress = progress or ConsoleProgress()
     out = _Appender(run_dir / "generations.jsonl")
     done = {r["key"] for r in read_jsonl(out.path) if not r.get("error")}
     jobs, pending = [], []
-    limits = Limits(cfg.run)  # one registry: caps are shared by every model on a subscription
+    limits = limits or Limits(cfg.run)  # one registry: caps are shared by every model on a subscription
 
     for spec in models:
         try:
@@ -132,7 +144,7 @@ async def generate(cfg: Config, tasks: list[Task], run_dir: Path, models: Iterab
 
 
 async def grade_all(cfg: Config, tasks: list[Task], run_dir: Path, regrade: bool = False,
-                    progress: Progress | None = None) -> None:
+                    progress: Progress | None = None, limits: Limits | None = None) -> None:
     progress = progress or ConsoleProgress()
     gens = {r["key"]: r for r in read_jsonl(run_dir / "generations.jsonl") if not r.get("error")}
     grades_path = run_dir / "grades.jsonl"
@@ -143,7 +155,7 @@ async def grade_all(cfg: Config, tasks: list[Task], run_dir: Path, regrade: bool
     by_id = {t.id: t for t in tasks}
 
     judges = []
-    limits = Limits(cfg.run)
+    limits = limits or Limits(cfg.run)  # shared with generation when run together (see pipeline)
     for spec in cfg.judges:
         try:
             judges.append((spec, _limited(spec, cfg, limits)))

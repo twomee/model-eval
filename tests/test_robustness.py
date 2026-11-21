@@ -210,3 +210,53 @@ def test_waiting_calls_dont_hold_global_slots(probe):
         await asyncio.gather(*(wrapped[s.name].complete(providers.Request(prompt="p")) for s in specs for _ in range(5)))
     asyncio.run(go())
     assert probe.peak == 4   # 6 models on 3 subscriptions: the global cap is the limit, not 1
+
+
+# ---------------------------------------------------------------- G: grading overlaps answering
+
+def test_read_jsonl_skips_only_a_half_written_last_line(tmp_path):
+    from evalkit.runner import read_jsonl
+    p = tmp_path / "g.jsonl"
+    p.write_text('{"a": 1}\n{"a": 2}\n{"a": 3, "trunc', encoding="utf-8")   # being appended right now
+    assert read_jsonl(p) == [{"a": 1}, {"a": 2}]
+    p.write_text('{"a": 1}\nGARBAGE\n{"a": 3}\n', encoding="utf-8")           # real corruption
+    with pytest.raises(Exception):
+        read_jsonl(p)
+
+
+def test_grading_starts_before_the_slowest_model_finishes(tmp_path, monkeypatch):
+    """G: grading used to wait for EVERY answer, leaving the judges' subscriptions idle for hours
+    while one slow subscription finished. Now finished answers are graded while others answer."""
+    from evalkit import pipeline
+
+    class Fast(_Probe):
+        async def complete(self, req):
+            return providers.Completion("x", 0.0, 1, 1)
+
+    class Slow(_Probe):
+        async def complete(self, req):
+            await asyncio.sleep(0.4)
+            return providers.Completion("x", 0.4, 1, 1)
+
+    monkeypatch.setitem(providers._REGISTRY, "fast", Fast)
+    monkeypatch.setitem(providers._REGISTRY, "slow", Slow)
+    graded_while_answering = []
+    real_grade_all = pipeline.grade_all
+
+    async def spy_grade_all(cfg, tasks, run_dir, **kw):
+        slow_done = sum(1 for r in runner.read_jsonl(run_dir / "generations.jsonl") if r["model"] == "slow")
+        graded_while_answering.append(slow_done < len(tasks))
+        await real_grade_all(cfg, tasks, run_dir, **kw)
+
+    monkeypatch.setattr(pipeline, "grade_all", spy_grade_all)
+    monkeypatch.chdir(tmp_path)
+    tasks = [Task(id=f"t{i}", category="c", prompt=f"p{i}", reference="x",
+                  graders=[{"type": "match", "must_include": ["x"]}]) for i in range(4)]
+    models = [ModelSpec(name="fast", provider="fast"), ModelSpec(name="slow", provider="slow")]
+    cfg = Config(run=RunSettings(repetitions=1), models=models, judges=[], category_weights={})
+    asyncio.run(pipeline.run_eval(cfg, tasks, models, tmp_path / "r", grade_every_s=0.1))
+
+    assert graded_while_answering[0] is True                 # a pass ran while "slow" was still answering
+    grades = runner.read_jsonl(tmp_path / "r" / "grades.jsonl")
+    assert sorted((g["model"], g["task_id"]) for g in grades) == sorted((m.name, t.id) for m in models for t in tasks)
+    assert len(grades) == 8                                   # every answer graded exactly once

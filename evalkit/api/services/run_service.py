@@ -67,10 +67,19 @@ class JobProgress(Progress):
         self.job = job
 
     def stage(self, stage: str, total: int, already_done: int) -> None:
-        self.job.stage = stage
-        self.job.stages[stage] = _Stage(total=total, already_done=already_done)
-        if stage != "report":
-            self.job.recent.append(f"{stage}: {total} to do" + (f", {already_done} already done" if already_done else ""))
+        # Grading runs in passes while answers are still coming in: accumulate, don't reset.
+        if stage == "grade" and (s := self.job.stages.get("grade")):
+            s.total += total
+            if total:
+                self.job.recent.append(f"grade: {total} new answers to grade")
+        else:
+            self.job.stages[stage] = _Stage(total=total, already_done=already_done)
+            if stage != "report":
+                self.job.recent.append(f"{stage}: {total} to do" + (f", {already_done} already done" if already_done else ""))
+        gen = self.job.stages.get("generate")
+        answering = gen is not None and gen.done < gen.total
+        # While answers are still coming in, the headline stage stays "generate" (grading is in the background).
+        self.job.stage = "generate" if stage == "grade" and answering else stage
 
     def item(self, stage: str, model: str, task_id: str, rep: int, detail: str, failed: bool) -> None:
         s = self.job.stages.setdefault(stage, _Stage())
