@@ -16,7 +16,7 @@ from evalkit.config import RunSettings, load_tasks
 from evalkit.graders import GRADERS, GradingContext
 
 TASKS = load_tasks(Path(__file__).parent.parent / "tasks")
-DETERMINISTIC = {"python_tests", "go_tests", "match", "length", "language"}
+DETERMINISTIC = {"python_tests", "answer_tests", "node_tests", "go_tests", "match", "length", "language"}
 CTX = GradingContext(RunSettings(code_timeout_s=60), judges=[])
 
 
@@ -29,8 +29,30 @@ def test_reference_passes_own_graders(task):
             continue
         if cfg["type"] == "go_tests" and shutil.which("go") is None:
             pytest.skip("go toolchain not installed")
+        if cfg["type"] == "node_tests" and shutil.which("node") is None:
+            pytest.skip("node not installed")
         result = asyncio.run(GRADERS[cfg["type"]](task, task.reference, cfg, CTX))
         assert result.score == 1.0, f"{task.id}/{cfg['type']}: {result.details}"
+
+
+WRONG = [(t, i, w) for t in TASKS for i, w in enumerate(t.wrong_answers)]
+
+
+@pytest.mark.parametrize("task,i,wrong", WRONG, ids=[f"{t.id}#{i}" for t, i, _ in WRONG])
+def test_known_wrong_answer_fails(task, i, wrong):
+    """The other half of the golden test: a test that accepts everything also passes it.
+    `wrong_answers` are plausible-but-wrong answers (the mistakes weak models actually make);
+    each must lose points on the deterministic graders, or the task can't separate models."""
+    scores = []
+    for cfg in task.graders:
+        if cfg["type"] not in DETERMINISTIC:
+            continue
+        if (cfg["type"] == "go_tests" and shutil.which("go") is None) or \
+                (cfg["type"] == "node_tests" and shutil.which("node") is None):
+            pytest.skip(f"{cfg['type']} toolchain not installed")
+        scores.append(asyncio.run(GRADERS[cfg["type"]](task, wrong, cfg, CTX)).score)
+    assert scores and min(s for s in scores if s is not None) < 1.0, \
+        f"{task.id}: wrong answer #{i} passed every deterministic grader -> the tests are too lenient"
 
 
 @pytest.mark.parametrize("task", [t for t in TASKS if any(g["type"] == "rubric" for g in t.graders)],

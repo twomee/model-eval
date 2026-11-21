@@ -31,6 +31,7 @@ category_weights:
   system_design: 1.5
   hebrew_text: 1
   general: 1
+  frontend: 1          # TypeScript (node_tests); raise it if you write a lot of frontend
 
 models:
   # ---------- subscriptions via official CLIs ----------
@@ -181,18 +182,133 @@ models:
     parse: agy_json
     variants: {effort: [medium]}
 
-  # ---------- subscriptions without a CLI: copy/paste ----------
-  - name: mistral-lechat
-    provider: manual
+  # Mistral Vibe CLI (on your Mistral account; credentials come from the OS keyring).
+  # It serves Mistral's models AND GLM 5.3 ("Mistral Hosted"), so it replaces the manual le-chat/glm entries.
+  # Isolation (vibe 3.1.2, verified 2026-11-21 with doctor --isolation):
+  #   * ~/.vibe/AGENTS.md always loads from VIBE_HOME -> each variant gets a clean VIBE_HOME.
+  #   * Your extra models (Large 4, GLM) are account feature flags cached in experiment_eval_cache.json
+  #     (keyed by whoami_cache.json): symlinked in, data only, no instructions.
+  #   * `--model` is checked BEFORE those flags load and rejects them, so the model is set via
+  #     active_model in the generated config.toml instead. Thinking level is config-only too.
+  #   * Tools can't be removed in this version (enabled_tools / disabled_tools / permission="never" all
+  #     leave Vibe's code-mode tools defined). Contained instead, verified from the session log:
+  #     outside_workdir = "deny" refused `find /home ...`; --agent ask refused writes and python3 (headless
+  #     has nobody to approve); only read-only commands inside the empty temp dir ran.
+  #   * Vibe's run_typescript sandbox DOES execute code: Large 4 ports its answer to TypeScript and tests it
+  #     before replying (~200k input tokens on a coding task vs ~9k for the others). That's how Vibe behaves
+  #     in daily use, so it's kept - and capped: --max-tokens / --time-limit stop a runaway cleanly
+  #     (exit 3 -> recorded as an error, never as a half answer). The planner's token estimate learns it.
+  #     Cheaper alternative (measures "the model with a neutral prompt", not "the model in Vibe"): add
+  #     "--system-prompt-file", "<file saying no tools are available>" -> ~58k tokens, still some tool use.
+  #   * Prompt goes via stdin (`-p` with no value): a prompt starting with "-" can't become a flag.
+  #   * An unsupported thinking level fails loudly (HTTP 400 listing the supported values).
+  # Levels per model come from Vibe's catalog; `high` is the only level all four share -> default.
+  - name: mistral-medium         # Mistral Medium 3.5 (Vibe's default model)
+    provider: cli
+    command: &vibe_cmd ["vibe", "-p", "--output", "json", "--output-dir", "vibe-export", "--trust", "--agent", "ask",
+                        "--max-tokens", "400000", "--time-limit", "840"]
+    parse: vibe_json
+    isolated_home:
+      env: VIBE_HOME
+      dir: ~/.cache/evalkit/vibe-home/mistral-medium-3.5-{effort}
+      link: &vibe_links [~/.vibe/experiment_eval_cache.json, ~/.vibe/whoami_cache.json]
+      files:
+        config.toml: |
+          active_model = "mistral-medium-3.5"
+          models = [{ alias = "mistral-medium-3.5", thinking = "{effort}" }]
+          include_project_context = false
+          enable_mcp = false
+          enable_subagents = false
+          enable_connectors = false
+          enable_update_checks = false
+          managed_shell_tools_enabled = false
+          enable_background_processes = false
+          outside_workdir = "deny"
+    variants: {effort: ["off", high]}    # quoted: bare `off` is a YAML boolean
+    defaults: {effort: [high]}
+    timeout_s: 900
 
-  - name: glm
-    provider: manual
-    # If your GLM subscription is the "Coding Plan", you likely have an API key for its coding endpoint.
-    # Then replace the two lines above with:
-    # provider: openai_compat
-    # base_url: https://api.z.ai/api/coding/paas/v4
-    # model: glm-5.3            # verify the exact id in your Z.ai console
-    # api_key_env: ZAI_API_KEY
+  - name: mistral-large              # Mistral Large 4
+    provider: cli
+    command: *vibe_cmd
+    parse: vibe_json
+    isolated_home:
+      env: VIBE_HOME
+      dir: ~/.cache/evalkit/vibe-home/mistral-large-4-0-3-{effort}
+      link: *vibe_links
+      files:
+        config.toml: |
+          active_model = "mistral-large-4-0-3"
+          models = [{ alias = "mistral-large-4-0-3", thinking = "{effort}" }]
+          include_project_context = false
+          enable_mcp = false
+          enable_subagents = false
+          enable_connectors = false
+          enable_update_checks = false
+          managed_shell_tools_enabled = false
+          enable_background_processes = false
+          outside_workdir = "deny"
+    variants: {effort: [low, medium, high]}
+    defaults: {effort: [high]}
+    timeout_s: 900
+
+  - name: glm              # GLM 5.3, hosted by Mistral
+    provider: cli
+    command: *vibe_cmd
+    parse: vibe_json
+    isolated_home:
+      env: VIBE_HOME
+      dir: ~/.cache/evalkit/vibe-home/glm-5-3-{effort}
+      link: *vibe_links
+      files:
+        config.toml: |
+          active_model = "glm-5-3"
+          models = [{ alias = "glm-5-3", thinking = "{effort}" }]
+          include_project_context = false
+          enable_mcp = false
+          enable_subagents = false
+          enable_connectors = false
+          enable_update_checks = false
+          managed_shell_tools_enabled = false
+          enable_background_processes = false
+          outside_workdir = "deny"
+    variants: {effort: [low, high, max]}
+    defaults: {effort: [high]}
+    timeout_s: 900
+
+  - name: glm-flash              # GLM 5.3 Flash
+    provider: cli
+    command: *vibe_cmd
+    parse: vibe_json
+    isolated_home:
+      env: VIBE_HOME
+      dir: ~/.cache/evalkit/vibe-home/zai-glm-5-3-flash-{effort}
+      link: *vibe_links
+      files:
+        config.toml: |
+          active_model = "zai-glm-5-3-flash"
+          models = [{ alias = "zai-glm-5-3-flash", thinking = "{effort}" }]
+          include_project_context = false
+          enable_mcp = false
+          enable_subagents = false
+          enable_connectors = false
+          enable_update_checks = false
+          managed_shell_tools_enabled = false
+          enable_background_processes = false
+          outside_workdir = "deny"
+    variants: {effort: [low, high, max]}
+    defaults: {effort: [high]}
+    timeout_s: 900
+
+  # ---------- subscriptions without a CLI: copy/paste ----------
+  # (none left: Vibe covers Mistral and GLM.) To add one: `- {name: my-chat, provider: manual}`,
+  # then `python -m evalkit export` and paste replies into manual/<name>/<task>.answer.md.
+  # A Z.ai "Coding Plan" API key could also run GLM directly:
+  # - name: glm-zai
+  #   provider: openai_compat
+  #   base_url: https://api.z.ai/api/coding/paas/v4
+  #   model: glm-5.3            # verify the exact id in your Z.ai console
+  #   api_key_env: ZAI_API_KEY
 
   # ---------- API alternatives (uncomment when you have keys) ----------
   # - name: claude-api

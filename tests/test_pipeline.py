@@ -113,3 +113,15 @@ def test_mock_pipeline_ranks_and_resumes(tmp_path, monkeypatch, capsys):
     ranking = [m["name"] for m in summary["models"]]
     assert ranking[0] == "mock-good" and ranking[-1] == "mock-broken"
     assert summary["has_pairs"] and summary["models"][0]["n_pairs"] == 1
+
+
+def test_task_signal_flags_tasks_that_dont_separate_models():
+    from evalkit.report import task_signal
+    matrix = {
+        "easy": {"a": 1.0, "b": 0.97, "c": 0.96},
+        "hard_good": {"a": 1.0, "b": 0.4, "c": 0.0},
+        "broken": {"a": 0.0, "b": 0.02, "c": 0.0},
+        "single": {"a": 0.5},                        # one model: can't judge separation
+    }
+    verdicts = {s["task"]: s["verdict"] for s in task_signal(matrix)}
+    assert verdicts == {"easy": "too easy", "hard_good": "separates", "broken": "nobody passes"}

@@ -137,3 +137,28 @@ def test_per_model_timeout_overrides_run_setting(monkeypatch, model_timeout, exp
     cfg = Config(run=RunSettings(timeout_s=300), models=[], judges=[], category_weights={})
     runner._limited(ModelSpec(name="m", provider="mock", model="good", timeout_s=model_timeout), cfg)
     assert seen == [expected]
+
+
+def test_yaml_boolean_variant_values_are_rejected(tmp_path):
+    # `[off, high]` in YAML is [False, "high"]: it would silently generate thinking = "False".
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text(textwrap.dedent("""
+        models:
+          - name: m
+            provider: mock
+            model: "{effort}"
+            variants: {effort: [off, high]}
+    """), encoding="utf-8")
+    with pytest.raises(ValueError, match="quote words like off"):
+        load_config(cfg)
+
+
+def test_isolated_home_files_get_variant_substitution():
+    e = {"name": "v", "provider": "cli", "command": ["vibe", "-p"],
+         "isolated_home": {"env": "VIBE_HOME", "dir": "~/h/{effort}",
+                           "files": {"config.toml": 'models = [{ alias = "a", thinking = "{effort}" }]\n'}},
+         "variants": {"effort": ["low", "max"]}}
+    low, mx = expand_variants(e)
+    assert low["isolated_home"]["dir"] == "~/h/low" and mx["isolated_home"]["dir"] == "~/h/max"
+    # TOML inline-table braces `{ alias = ... }` are not placeholders; only {effort} is replaced.
+    assert mx["isolated_home"]["files"]["config.toml"] == 'models = [{ alias = "a", thinking = "max" }]\n'

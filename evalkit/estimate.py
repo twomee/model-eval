@@ -27,6 +27,7 @@ class ModelCost:
     calls: int
     est_input_tokens: int | None     # None = no earlier run of this exact competitor
     est_output_tokens: int | None
+    est_cost_usd: float | None = None  # from cost the CLI itself reported (vibe, claude) in earlier runs
 
 
 @dataclass
@@ -36,6 +37,7 @@ class SubscriptionCost:
     judge_calls: int = 0
     est_input_tokens: int = 0
     est_output_tokens: int = 0
+    est_cost_usd: float = 0.0
     models_without_history: int = 0
 
     @property
@@ -57,10 +59,11 @@ class Estimate:
         return sum(s.total_calls for s in self.subscriptions)
 
 
-def token_history(results_dir: Path) -> dict[str, tuple[float, float, int]]:
-    """competitor name -> (mean input tokens, mean output tokens, n calls) over earlier runs."""
+def token_history(results_dir: Path) -> dict[str, tuple[float, float, int, float | None]]:
+    """competitor name -> (mean input tokens, mean output tokens, n calls, mean cost USD or None)."""
     ins: dict[str, list[int]] = defaultdict(list)
     outs: dict[str, list[int]] = defaultdict(list)
+    costs: dict[str, list[float]] = defaultdict(list)
     for f in results_dir.glob("*/generations.jsonl"):
         for line in f.read_text(encoding="utf-8").splitlines():
             try:
@@ -71,7 +74,10 @@ def token_history(results_dir: Path) -> dict[str, tuple[float, float, int]]:
                 continue
             ins[r["model"]].append(r["input_tokens"])
             outs[r["model"]].append(r["output_tokens"])
-    return {m: (st.mean(ins[m]), st.mean(outs[m]), len(ins[m])) for m in ins}
+            if r.get("cost_usd") is not None:
+                costs[r["model"]].append(r["cost_usd"])
+    return {m: (st.mean(ins[m]), st.mean(outs[m]), len(ins[m]), st.mean(costs[m]) if costs[m] else None)
+            for m in ins}
 
 
 def _reps(spec: ModelSpec, repetitions: int) -> int:
@@ -93,13 +99,15 @@ def estimate(cfg: Config, tasks: list[Task], models: list[ModelSpec], repetition
         calls = len(tasks) * _reps(spec, reps)
         h = history.get(spec.name)
         cost = ModelCost(spec.name, spec.family, spec.subscription, calls,
-                         round(h[0] * calls) if h else None, round(h[1] * calls) if h else None)
+                         round(h[0] * calls) if h else None, round(h[1] * calls) if h else None,
+                         h[3] * calls if h and h[3] is not None else None)
         costs.append(cost)
         s = sub(spec.subscription)
         s.generation_calls += calls
         if h:
             s.est_input_tokens += cost.est_input_tokens or 0
             s.est_output_tokens += cost.est_output_tokens or 0
+            s.est_cost_usd += cost.est_cost_usd or 0.0
         elif spec.provider != "manual":
             s.models_without_history += 1
         # Every rubric-graded answer is sent to every judge.
@@ -110,6 +118,10 @@ def estimate(cfg: Config, tasks: list[Task], models: list[ModelSpec], repetition
     if any(s.models_without_history for s in subs.values()):
         notes.append("Token estimates only cover competitors with an earlier run; calls are exact. "
                      "Higher effort uses more tokens per call than medium, so expect more.")
+    if any(s.est_cost_usd for s in subs.values()):
+        notes.append("Cost = the CLI's own list-price estimate (claude, vibe) averaged over earlier runs. On a "
+                     "flat subscription it isn't billed; on a pay-as-you-go API key (vibe: check your Mistral "
+                     "console) it is. Judging cost isn't included.")
     if "manual" in subs:
         notes.append("manual = answers you paste yourself: no quota, but your time.")
     order = sorted((s for s in subs.values() if s.total_calls), key=lambda s: -s.total_calls)

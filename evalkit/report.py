@@ -59,9 +59,19 @@ def _bootstrap_ci(task_means: dict[str, float], task_cat: dict[str, str], weight
     return samples[int(0.05 * n)], samples[int(0.95 * n)]
 
 
+def _current(records: dict[str, dict[str, Any]], tasks: list[Task] | None) -> dict[str, dict[str, Any]]:
+    """Keep only results for the CURRENT version of each task. Keys are model|task|fingerprint|rep:
+    an edited task has a new fingerprint, so its old answers (graded against the old prompt or
+    tests) must not count, and removed tasks must disappear from the report."""
+    if tasks is None:
+        return records
+    fingerprints = {t.id: t.fingerprint for t in tasks}
+    return {k: r for k, r in records.items() if fingerprints.get(r["task_id"]) == k.split("|")[2]}
+
+
 def build_summary(cfg: Config, run_dir: Path, tasks: list[Task] | None = None) -> dict[str, Any]:
-    gens = _latest(read_jsonl(run_dir / "generations.jsonl"))
-    grades = _latest(read_jsonl(run_dir / "grades.jsonl"))
+    gens = _current(_latest(read_jsonl(run_dir / "generations.jsonl")), tasks)
+    grades = _current(_latest(read_jsonl(run_dir / "grades.jsonl")), tasks)
     task_cat = {g["task_id"]: g["category"] for g in gens.values()}
     categories = sorted(set(task_cat.values()))
     # pair id -> {lang: task_id}, for the Hebrew-vs-English comparison
@@ -113,7 +123,27 @@ def build_summary(cfg: Config, run_dir: Path, tasks: list[Task] | None = None) -
     ranked = sorted((p for p in per_model.values() if not p["empty"]), key=lambda p: -p["overall"])
     ranked += [p for p in per_model.values() if p["empty"]]
     return {"models": ranked, "categories": categories, "matrix": matrix, "has_pairs": bool(pairs),
-            "gens": gens, "grades": grades, "weights": cfg.category_weights}
+            "gens": gens, "grades": grades, "weights": cfg.category_weights,
+            "task_signal": task_signal(matrix)}
+
+
+EASY, BROKEN = 0.95, 0.05
+
+
+def task_signal(matrix: dict[str, dict[str, float]], min_models: int = 2) -> list[dict[str, Any]]:
+    """Which tasks actually separate the models? The README rule, enforced: "a good task is one a
+    weak model fails". All models >= 0.95 -> the task adds nothing to the decision. All <= 0.05 ->
+    more likely a broken task (or reference) than a hard one: check it before blaming the models."""
+    out = []
+    for task, by_model in sorted(matrix.items()):
+        scores = list(by_model.values())
+        if len(scores) < min_models:
+            continue
+        lo, hi = min(scores), max(scores)
+        verdict = "too easy" if lo >= EASY else "nobody passes" if hi <= BROKEN else "separates"
+        out.append({"task": task, "min": lo, "max": hi, "spread": hi - lo, "n_models": len(scores),
+                    "verdict": verdict})
+    return out
 
 
 def _fmt(x: float | None, kind: str = "score") -> str:
@@ -203,13 +233,27 @@ def write_html(summary: dict[str, Any], path: Path) -> None:
                          f"{judge_notes}<pre dir='auto'>{e(gen['output'])}</pre></details>")
         drill.append(f"<h3>{e(t)}</h3>{''.join(items)}")
 
+    signal = summary.get("task_signal") or []
+    flagged = [s for s in signal if s["verdict"] != "separates"]
+    signal_html = ""
+    if signal:
+        rows_s = "".join(
+            f"<tr><td>{e(s['task'])}</td><td>{s['min']:.2f}</td><td>{s['max']:.2f}</td><td>{s['n_models']}</td>"
+            f"<td class='{'na' if s['verdict'] == 'separates' else 'warn'}'>{s['verdict']}</td></tr>"
+            for s in sorted(signal, key=lambda s: (s["verdict"] == "separates", s["spread"])))
+        signal_html = (f"<h2>Task signal</h2><p class='note'>{len(flagged)} of {len(signal)} tasks don't separate "
+                       "the models. <b>too easy</b> = every model scored &ge; 0.95: it adds nothing to the decision, "
+                       "replace it with a harder one. <b>nobody passes</b> = every model &le; 0.05: check the task and "
+                       "reference before blaming the models.</p><table><tr><th>task</th><th>min</th><th>max</th>"
+                       f"<th>models</th><th>verdict</th></tr>{rows_s}</table>")
+
     doc = f"""<!doctype html><html><head><meta charset="utf-8"><title>Model eval report</title>
 <style>
  body{{font-family:system-ui,sans-serif;margin:2rem;max-width:1300px;color:#222}}
  table{{border-collapse:collapse;margin:1rem 0}} td,th{{border:1px solid #ddd;padding:.4rem .6rem;text-align:center}}
  th{{background:#f5f5f5}} td.na{{color:#999}} pre{{white-space:pre-wrap;background:#fafafa;padding:.8rem;border:1px solid #eee;max-height:500px;overflow:auto}}
  details{{margin:.3rem 0}} summary{{cursor:pointer}} .j{{font-size:.85em;color:#444;margin:.2rem 0}}
- .note{{background:#fff8e1;border-left:4px solid #f0b400;padding:.6rem 1rem}}
+ .note{{background:#fff8e1;border-left:4px solid #f0b400;padding:.6rem 1rem}} td.warn{{color:#b26a00;font-weight:600}}
 </style></head><body>
 <h1>Model eval report</h1>
 <p class="note"><b>How to read this:</b> overall = weighted mean of category means.
@@ -221,6 +265,7 @@ Inconsistency = mean std-dev across repetitions (lower = more predictable). HE v
 {''.join(rows)}</table>
 <h2>Per task</h2>
 <table><tr><th>task</th>{''.join(f'<th>{e(n)}</th>' for n in names)}</tr>{task_rows}</table>
+{signal_html}
 <h2>Answers (rep 0)</h2>{''.join(drill)}
 </body></html>"""
     path.write_text(doc, encoding="utf-8")

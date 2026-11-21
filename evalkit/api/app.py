@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from ..config import ConfigError
 from .routes import models, plan
 from .services.models_service import ModelsService
 from .services.plan_service import PlanService
@@ -38,6 +39,12 @@ def create_app(config_path: Path, tasks_dir: Path, allowed_hosts: list[str] | No
             if ctype != "application/json":
                 return JSONResponse({"detail": "Content-Type must be application/json"}, status_code=415)
         return await call_next(request)
+
+    @app.exception_handler(ConfigError)
+    async def config_error(_request: Request, exc: ConfigError) -> JSONResponse:
+        # Config is re-read per request, so a typo in config.yaml surfaces here. Say what's wrong
+        # (the UI shows `detail`) instead of a bare 500 and a blank page.
+        return JSONResponse({"detail": f"Invalid configuration: {exc}"}, status_code=500)
 
     @app.get("/api/health")
     def health() -> dict[str, str]:

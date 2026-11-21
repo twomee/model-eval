@@ -55,7 +55,7 @@ class ModelSpec:
         gpt-oss on your GOOGLE plan); APIs bill their endpoint; manual is your own time."""
         if self.provider == "cli" and self.command:
             cli = Path(self.command[0]).name
-            return {"codex": "openai", "agy": "google", "claude": "claude"}.get(cli, cli)
+            return {"codex": "openai", "agy": "google", "claude": "claude", "vibe": "mistral"}.get(cli, cli)
         if self.provider == "anthropic":
             return "anthropic-api"
         if self.provider == "manual":
@@ -83,7 +83,8 @@ class ModelSpec:
 @dataclass(frozen=True)
 class RunSettings:
     repetitions: int = 3
-    concurrency: int = 4
+    concurrency: int = 4                # global cap on calls in flight
+    subscription_concurrency: int = 2   # per subscription (CLI login): what vendors rate-limit
     temperature: float | None = 0.0
     max_tokens: int = 4096
     timeout_s: float = 180
@@ -111,6 +112,9 @@ class Task:
     # each model loses when you work in Hebrew instead of English.
     pair: str | None = None
     lang: str = "en"
+    # Plausible-but-wrong answers that must FAIL the deterministic graders (golden test).
+    # Not part of the fingerprint: they test the task, they don't change what models see.
+    wrong_answers: tuple[str, ...] = ()
 
     @property
     def fingerprint(self) -> str:
@@ -154,7 +158,21 @@ def _load_models(entries: list[dict[str, Any]]) -> list[ModelSpec]:
     return specs
 
 
+class ConfigError(ValueError):
+    """config.yaml or a tasks file is invalid. One type for every cause (bad YAML, missing key,
+    unknown setting, bad variant) so callers (CLI, API) can show the message instead of crashing."""
+
+
 def load_config(path: Path) -> Config:
+    try:
+        return _load_config(path)
+    except ConfigError:
+        raise
+    except (ValueError, KeyError, TypeError, OSError, yaml.YAMLError) as e:
+        raise ConfigError(f"{path}: {e}") from e
+
+
+def _load_config(path: Path) -> Config:
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     models = _load_models(raw["models"])
     judges = _load_models(raw.get("judges", []))
@@ -170,6 +188,15 @@ def load_config(path: Path) -> Config:
 
 
 def load_tasks(tasks_dir: Path) -> list[Task]:
+    try:
+        return _load_tasks(tasks_dir)
+    except ConfigError:
+        raise
+    except (ValueError, KeyError, TypeError, OSError, yaml.YAMLError) as e:
+        raise ConfigError(f"{tasks_dir}: {e}") from e
+
+
+def _load_tasks(tasks_dir: Path) -> list[Task]:
     """Load tasks. A doc with `twin_of: <id>` is a translation of another task: it INHERITS
     the original's category and graders (single source of truth - fix a test once, both
     sides get it) and may add `extra_graders` (e.g. a language constraint)."""
@@ -187,7 +214,8 @@ def load_tasks(tasks_dir: Path) -> list[Task]:
         by_id[d["id"]] = Task(
             id=d["id"], category=d["category"], prompt=d["prompt"],
             graders=d.get("graders") or [d["grader"]], system=d.get("system"),
-            reference=d.get("reference"), lang=d.get("lang", "en"))
+            reference=d.get("reference"), lang=d.get("lang", "en"),
+            wrong_answers=tuple(d.get("wrong_answers") or ()))
 
     for d in (d for d in raw if "twin_of" in d):
         orig = by_id.get(d["twin_of"])

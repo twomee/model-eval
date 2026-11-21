@@ -1,0 +1,466 @@
+# Harder tasks, built around the edge cases weak models get wrong.
+# Each has `wrong_answers`: plausible mistakes that the golden test proves the graders REJECT
+# (a test that accepts everything would also pass the reference-answer check).
+
+- id: py_sql_monthly_revenue
+  category: backend_code
+  prompt: |
+    Write a Python function `monthly_net_revenue(conn, year)` for a SQLite database (`conn` is a
+    `sqlite3.Connection`) with this table:
+
+        CREATE TABLE orders (
+            id INTEGER PRIMARY KEY,
+            customer_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL,   -- ISO 8601, may carry a UTC offset, e.g. 2026-03-31T23:30:00-02:00
+            amount_cents INTEGER,       -- may be NULL; treat NULL as 0
+            status TEXT NOT NULL        -- 'paid', 'refund' or 'cancelled'
+        );
+
+    Return a list of 12 tuples `(month, net_cents)` for every month of `year`, in order, where
+    `month` is `"YYYY-MM"` and `net_cents` is an int: the sum of 'paid' amounts minus the sum of
+    'refund' amounts (refunds are stored as positive numbers). 'cancelled' rows don't count.
+    The month is determined in UTC. Months without orders have 0. Pass `year` to SQL as a parameter.
+    Return the code in a single ```python block.
+  reference: |
+    ```python
+    import sqlite3
+
+
+    def monthly_net_revenue(conn: sqlite3.Connection, year: int) -> list[tuple[str, int]]:
+        # strftime() normalises ISO offsets to UTC, so a row at 23:30-02:00 lands in the next month.
+        rows = conn.execute(
+            """
+            SELECT strftime('%Y-%m', created_at) AS month,
+                   SUM(CASE status
+                           WHEN 'paid' THEN COALESCE(amount_cents, 0)
+                           WHEN 'refund' THEN -COALESCE(amount_cents, 0)
+                           ELSE 0
+                       END)
+            FROM orders
+            WHERE strftime('%Y', created_at) = ?
+            GROUP BY month
+            """,
+            (f"{int(year):04d}",),
+        ).fetchall()
+        totals = {month: int(net or 0) for month, net in rows}
+        return [(f"{int(year):04d}-{m:02d}", totals.get(f"{int(year):04d}-{m:02d}", 0)) for m in range(1, 13)]
+    ```
+  wrong_answers:
+    - |
+      ```python
+      def monthly_net_revenue(conn, year):
+          # bug: substr ignores the UTC offset; no zero-fill
+          rows = conn.execute(
+              "SELECT substr(created_at, 1, 7), SUM(CASE status WHEN 'paid' THEN COALESCE(amount_cents,0) "
+              "WHEN 'refund' THEN -COALESCE(amount_cents,0) ELSE 0 END) FROM orders "
+              "WHERE substr(created_at, 1, 4) = ? GROUP BY 1 ORDER BY 1", (str(year),)).fetchall()
+          return [(m, int(v)) for m, v in rows]
+      ```
+    - |
+      ```python
+      def monthly_net_revenue(conn, year):
+          # bug: SUM over only-NULL amounts is NULL, not 0
+          rows = dict(conn.execute(
+              "SELECT strftime('%Y-%m', created_at), SUM(CASE status WHEN 'paid' THEN amount_cents "
+              "WHEN 'refund' THEN -amount_cents ELSE 0 END) FROM orders "
+              "WHERE strftime('%Y', created_at) = ? GROUP BY 1", (str(year),)).fetchall())
+          return [(f"{year}-{m:02d}", rows.get(f"{year}-{m:02d}", 0)) for m in range(1, 13)]
+      ```
+  graders:
+    - type: python_tests
+      tests: |
+        import sqlite3
+        import pytest
+        from solution import monthly_net_revenue
+
+        ROWS = [
+            (1, "2026-01-15T10:00:00Z", 1000, "paid"),
+            (1, "2026-01-20T10:00:00+00:00", 300, "refund"),
+            (2, "2026-01-21T10:00:00Z", 9999, "cancelled"),
+            (2, "2026-03-31T23:30:00-02:00", 500, "paid"),     # = 2026-04-01 01:30 UTC -> April
+            (3, "2026-05-01T00:30:00+02:00", 700, "paid"),     # = 2026-04-30 22:30 UTC -> April
+            (3, "2026-06-10T08:00:00Z", None, "paid"),         # only a NULL in June -> 0, not None
+            (4, "2025-12-31T23:30:00-01:00", 4000, "paid"),    # = 2026-01-01 00:30 UTC -> 2026-01
+            (4, "2026-12-31T23:59:00+01:00", 250, "paid"),     # = 2026-12-31 22:59 UTC -> December
+            (5, "2027-01-01T00:10:00+03:00", 800, "paid"),     # = 2026-12-31 21:10 UTC -> December 2026
+            (5, "2025-06-01T12:00:00Z", 123, "paid"),          # other year
+        ]
+
+
+        @pytest.fixture
+        def conn():
+            c = sqlite3.connect(":memory:")
+            c.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER NOT NULL, "
+                      "created_at TEXT NOT NULL, amount_cents INTEGER, status TEXT NOT NULL)")
+            c.executemany("INSERT INTO orders (customer_id, created_at, amount_cents, status) VALUES (?,?,?,?)", ROWS)
+            return c
+
+
+        def result(conn):
+            return dict(monthly_net_revenue(conn, 2026))
+
+
+        def test_twelve_months_in_order(conn):
+            out = monthly_net_revenue(conn, 2026)
+            assert [m for m, _ in out] == [f"2026-{i:02d}" for i in range(1, 13)]
+
+
+        def test_paid_minus_refund_ignores_cancelled(conn):
+            assert result(conn)["2026-01"] == 1000 - 300 + 4000
+
+
+        def test_offsets_are_converted_to_utc(conn):
+            assert result(conn)["2026-03"] == 0
+            assert result(conn)["2026-04"] == 500 + 700
+            assert result(conn)["2026-05"] == 0
+
+
+        def test_year_boundaries_in_utc(conn):
+            assert result(conn)["2026-12"] == 250 + 800
+            assert monthly_net_revenue(conn, 2025)[11] == ("2025-12", 0)
+
+
+        def test_empty_and_null_months_are_int_zero(conn):
+            r = result(conn)
+            assert r["2026-06"] == 0 and type(r["2026-06"]) is int
+            assert r["2026-02"] == 0
+
+
+        def test_other_year(conn):
+            assert dict(monthly_net_revenue(conn, 2025))["2025-06"] == 123
+
+- id: sec_fix_report_download
+  category: debugging
+  prompt: |
+    This function serves report files to logged-in users. Find every security vulnerability, then
+    return a fixed version with the same signature and the same behaviour for legitimate requests.
+    For any request that would read a file outside `reports_dir`, raise `PermissionError`.
+    Put the complete fixed module in one ```python block, then list each vulnerability in one line.
+
+    ```python
+    import os
+
+    REPORTS_DIR = "/srv/reports"
+
+
+    def get_report(conn, user_id, name, reports_dir=REPORTS_DIR):
+        row = conn.execute(f"SELECT owner_id FROM reports WHERE name = '{name}'").fetchone()
+        if row is None:
+            raise FileNotFoundError(name)
+        if row[0] != user_id:
+            raise PermissionError(name)
+        with open(os.path.join(reports_dir, name)) as f:
+            return f.read()
+    ```
+  reference: |
+    ```python
+    import os
+
+    REPORTS_DIR = "/srv/reports"
+
+
+    def get_report(conn, user_id, name, reports_dir=REPORTS_DIR):
+        # 1. Parameterized query: `name` can never change the SQL.
+        row = conn.execute("SELECT owner_id FROM reports WHERE name = ?", (name,)).fetchone()
+        if row is None:
+            raise FileNotFoundError(name)
+        if row[0] != user_id:
+            raise PermissionError(name)
+        # 2. Resolve symlinks and "..", then require the result to be INSIDE the base directory.
+        #    commonpath (not startswith) so /srv/reports_evil doesn't pass as /srv/reports.
+        base = os.path.realpath(reports_dir)
+        target = os.path.realpath(os.path.join(base, name))
+        if os.path.commonpath([base, target]) != base or target == base:
+            raise PermissionError(name)
+        with open(target) as f:
+            return f.read()
+    ```
+
+    - SQL injection: `name` was formatted into the query; now a bound parameter.
+    - Path traversal: `../` in a stored name escaped the directory; the resolved path must stay inside it.
+    - Absolute names: `os.path.join(base, "/etc/passwd")` drops `base`; covered by the same check.
+    - Symlinks inside the directory pointing outside: `realpath` resolves them before the check.
+    - Prefix confusion: `startswith("/srv/reports")` accepts `/srv/reports_evil`; `commonpath` doesn't.
+  wrong_answers:
+    - |
+      ```python
+      import os
+
+      def get_report(conn, user_id, name, reports_dir="/srv/reports"):
+          row = conn.execute("SELECT owner_id FROM reports WHERE name = ?", (name,)).fetchone()
+          if row is None:
+              raise FileNotFoundError(name)
+          if row[0] != user_id:
+              raise PermissionError(name)
+          path = os.path.abspath(os.path.join(reports_dir, name))   # no realpath, startswith without sep
+          if not path.startswith(os.path.abspath(reports_dir)):
+              raise PermissionError(name)
+          with open(path) as f:
+              return f.read()
+      ```
+    - |
+      ```python
+      import os
+
+      def get_report(conn, user_id, name, reports_dir="/srv/reports"):
+          row = conn.execute("SELECT owner_id FROM reports WHERE name = ?", (name,)).fetchone()
+          if row is None:
+              raise FileNotFoundError(name)
+          if row[0] != user_id:
+              raise PermissionError(name)
+          with open(os.path.join(reports_dir, name)) as f:   # only the SQL was fixed
+              return f.read()
+      ```
+  graders:
+    - type: python_tests
+      weight: 3
+      tests: |
+        import os
+        import sqlite3
+        import pytest
+        from solution import get_report
+
+
+        class RecordingConn:
+            """Wraps sqlite3 and records every execute(), to check the SQL is parameterized."""
+            def __init__(self, conn):
+                self.conn, self.calls = conn, []
+
+            def execute(self, sql, params=()):
+                self.calls.append((sql, params))
+                return self.conn.execute(sql, params)
+
+
+        @pytest.fixture
+        def env(tmp_path):
+            reports = tmp_path / "reports"
+            reports.mkdir()
+            (reports / "q3.txt").write_text("Q3 numbers")
+            (tmp_path / "secret.txt").write_text("TOP SECRET")
+            evil = tmp_path / "reports_evil"
+            evil.mkdir()
+            (evil / "x.txt").write_text("SIBLING SECRET")
+            os.symlink(tmp_path / "secret.txt", reports / "link.txt")
+            db = sqlite3.connect(":memory:")
+            db.execute("CREATE TABLE reports (name TEXT, owner_id INTEGER)")
+            names = ["q3.txt", "../secret.txt", str(tmp_path / "secret.txt"), "link.txt", "../reports_evil/x.txt"]
+            db.executemany("INSERT INTO reports VALUES (?, ?)", [(n, 1) for n in names])
+            return RecordingConn(db), str(reports)
+
+
+        def test_legit_read_still_works(env):
+            conn, reports = env
+            assert get_report(conn, 1, "q3.txt", reports) == "Q3 numbers"
+
+
+        def test_non_owner_is_denied(env):
+            # Either denial is fine: FileNotFoundError is arguably better (doesn't reveal the file
+            # exists). The prompt only fixes behaviour for LEGITIMATE requests; this isn't one.
+            conn, reports = env
+            with pytest.raises((PermissionError, FileNotFoundError)):
+                get_report(conn, 2, "q3.txt", reports)
+
+
+        def test_unknown_report(env):
+            conn, reports = env
+            with pytest.raises(FileNotFoundError):
+                get_report(conn, 1, "nope.txt", reports)
+
+
+        def test_sql_is_parameterized(env):
+            conn, reports = env
+            evil = "x' OR '1'='1"
+            with pytest.raises(FileNotFoundError):
+                get_report(conn, 1, evil, reports)
+            sql, params = conn.calls[0]
+            assert evil not in sql and evil in tuple(params)
+
+
+        @pytest.mark.parametrize("name", ["../secret.txt", "ABSOLUTE", "link.txt", "../reports_evil/x.txt"],
+                                 ids=["traversal", "absolute", "symlink", "prefix-sibling"])
+        def test_cannot_escape_reports_dir(env, tmp_path, name):
+            conn, reports = env
+            if name == "ABSOLUTE":
+                name = str(tmp_path / "secret.txt")
+            with pytest.raises(PermissionError):
+                get_report(conn, 1, name, reports)
+    - type: match
+      must_include: ["inject", "travers|\\.\\./", "symlink|realpath", "startswith|prefix|commonpath"]
+
+- id: gen_incident_json
+  category: general
+  prompt: |
+    Turn these incident notes into a JSON object. Reply with ONLY the JSON object: no prose, no
+    markdown code fences. Schema:
+    {"service": string, "severity": "SEV1" | "SEV2" | "SEV3",
+     "started_at": UTC timestamp "YYYY-MM-DDTHH:MM:SSZ", "resolved_at": same format,
+     "duration_minutes": integer, "customer_impact": boolean,
+     "action_items": [{"owner": string, "task": string, "due": "YYYY-MM-DD"}] sorted by due date, then owner}
+
+    Notes:
+    Incident notes, payments-api, Tuesday 3 Nov 2026.
+    Paged at 14:05 CET: checkout errors spiking. Declared sev 2 at 14:20 CET.
+    Root cause: expired TLS certificate on the card-vault proxy. Rotated the cert at 13:58 UTC.
+    Error rate back to baseline at 15:10 CET; incident resolved then. Customers saw failed payments for ~1h.
+    Follow-ups: Omer writes a cert-rotation runbook (due Nov 7 2026). Dana adds a cert-expiry alert,
+    due 2026-11-10. Dana writes the postmortem, due 7/11/2026 (day/month).
+  reference: |
+    {"service": "payments-api", "severity": "SEV2", "started_at": "2026-11-03T13:05:00Z", "resolved_at": "2026-11-03T14:10:00Z", "duration_minutes": 65, "customer_impact": true, "action_items": [{"owner": "Dana", "task": "Write the postmortem", "due": "2026-11-07"}, {"owner": "Omer", "task": "Write a cert-rotation runbook", "due": "2026-11-07"}, {"owner": "Dana", "task": "Add a cert-expiry alert", "due": "2026-11-10"}]}
+  wrong_answers:
+    - |
+      ```json
+      {"service": "payments-api", "severity": "SEV2", "started_at": "2026-11-03T13:05:00Z", "resolved_at": "2026-11-03T14:10:00Z", "duration_minutes": 65, "customer_impact": true, "action_items": [{"owner": "Dana", "task": "Write the postmortem", "due": "2026-11-07"}, {"owner": "Omer", "task": "Write a cert-rotation runbook", "due": "2026-11-07"}, {"owner": "Dana", "task": "Add a cert-expiry alert", "due": "2026-11-10"}]}
+      ```
+    - |
+      {"service": "payments-api", "severity": "SEV2", "started_at": "2026-11-03T14:05:00Z", "resolved_at": "2026-11-03T15:10:00Z", "duration_minutes": 60, "customer_impact": true, "action_items": [{"owner": "Omer", "task": "runbook", "due": "2026-11-07"}, {"owner": "Dana", "task": "postmortem", "due": "2026-11-07"}, {"owner": "Dana", "task": "alert", "due": "2026-11-10"}]}
+  graders:
+    - type: answer_tests
+      tests: |
+        import json
+        from pathlib import Path
+        import pytest
+
+        RAW = Path("answer.md").read_text(encoding="utf-8").strip()
+
+
+        def data():
+            # Lenient parse for the content tests: one wrong habit (fences) shouldn't zero everything.
+            text = RAW
+            if text.startswith("```"):
+                text = text.split("\n", 1)[1].rsplit("```", 1)[0]
+            return json.loads(text)
+
+
+        def test_only_json_no_fences_or_prose():
+            assert RAW.startswith("{") and RAW.endswith("}")
+            json.loads(RAW)
+
+
+        def test_exact_keys():
+            assert set(data()) == {"service", "severity", "started_at", "resolved_at", "duration_minutes",
+                                   "customer_impact", "action_items"}
+
+
+        def test_service_and_severity():
+            assert data()["service"] == "payments-api" and data()["severity"] == "SEV2"
+
+
+        def test_cet_converted_to_utc():
+            # November 3 is after the DST switch: CET = UTC+1
+            assert data()["started_at"] == "2026-11-03T13:05:00Z"
+            assert data()["resolved_at"] == "2026-11-03T14:10:00Z"
+
+
+        def test_duration_from_timestamps_not_the_rough_estimate():
+            d = data()["duration_minutes"]
+            assert d == 65 and type(d) is int
+
+
+        def test_customer_impact_is_boolean():
+            assert data()["customer_impact"] is True
+
+
+        def test_action_items_dates_and_order():
+            items = data()["action_items"]
+            assert [(i["owner"], i["due"]) for i in items] == [("Dana", "2026-11-07"), ("Omer", "2026-11-07"),
+                                                               ("Dana", "2026-11-10")]
+            assert all(set(i) == {"owner", "task", "due"} and i["task"].strip() for i in items)
+
+- id: ts_parse_query
+  category: frontend
+  prompt: |
+    Write a TypeScript module that exports `parseQuery(qs: string): Record<string, string | string[]>`.
+    Rules:
+    - An optional leading "?" is ignored; empty pairs ("a=1&&b=2") are skipped.
+    - Keys and values are percent-decoded, and "+" means a space.
+    - If a key or value contains a malformed percent-escape (e.g. "%E0%A4%A"), keep that part's raw
+      text (with "+" still turned into a space) instead of throwing.
+    - A key without "=" gets the value "". Only the first "=" splits: "t=a=b" gives "a=b".
+    - A key that appears once maps to a string; a repeated key maps to an array of its values in order.
+    - Untrusted input: a key like "__proto__" must become a normal own property of the result and
+      must not change any object's prototype.
+    Return the module in one ```ts block. No dependencies, no URLSearchParams.
+  reference: |
+    ```ts
+    function decode(part: string): string {
+      const spaced = part.replace(/\+/g, " ");
+      try {
+        return decodeURIComponent(spaced);
+      } catch {
+        return spaced; // malformed escape: keep the raw text
+      }
+    }
+
+    export function parseQuery(qs: string): Record<string, string | string[]> {
+      // No prototype: "__proto__" and "constructor" are plain keys, nothing can be polluted.
+      const out: Record<string, string | string[]> = Object.create(null);
+      const body = qs.startsWith("?") ? qs.slice(1) : qs;
+      for (const pair of body.split("&")) {
+        if (pair === "") continue;
+        const eq = pair.indexOf("=");
+        const key = decode(eq === -1 ? pair : pair.slice(0, eq));
+        const value = eq === -1 ? "" : decode(pair.slice(eq + 1));
+        const prev = Object.prototype.hasOwnProperty.call(out, key) ? out[key] : undefined;
+        if (prev === undefined) out[key] = value;
+        else if (Array.isArray(prev)) prev.push(value);
+        else out[key] = [prev, value];
+      }
+      return out;
+    }
+    ```
+  wrong_answers:
+    - |
+      ```ts
+      export function parseQuery(qs: string): Record<string, string | string[]> {
+        const out: Record<string, string | string[]> = {};      // prototype pollution
+        for (const pair of qs.replace(/^\?/, "").split("&")) {
+          if (!pair) continue;
+          const [k, ...rest] = pair.split("=");
+          const key = decodeURIComponent(k.replace(/\+/g, " ")); // throws on malformed input
+          const value = decodeURIComponent(rest.join("=").replace(/\+/g, " "));
+          const prev = out[key];
+          out[key] = prev === undefined ? value : Array.isArray(prev) ? [...prev, value] : [prev, value];
+        }
+        return out;
+      }
+      ```
+  graders:
+    - type: node_tests
+      tests: |
+        import { test } from "node:test";
+        import assert from "node:assert/strict";
+        import { parseQuery } from "./solution.ts";
+
+        const plain = (o: object) => JSON.parse(JSON.stringify(o));
+
+        test("basics: leading ?, empty pairs, plus and percent decoding", () => {
+          assert.deepEqual(plain(parseQuery("?a=1&&b=hello+world&c=%C3%A9t%C3%A9")),
+            { a: "1", b: "hello world", c: "été" });
+        });
+
+        test("repeated keys become arrays, single keys stay strings", () => {
+          assert.deepEqual(plain(parseQuery("tag=a&x=1&tag=b&tag=c")), { tag: ["a", "b", "c"], x: "1" });
+        });
+
+        test("key without = and values containing =", () => {
+          assert.deepEqual(plain(parseQuery("flag&t=a=b&e=")), { flag: "", t: "a=b", e: "" });
+        });
+
+        test("malformed escapes are kept raw instead of throwing", () => {
+          assert.deepEqual(plain(parseQuery("bad=%E0%A4%A&ok=%41&k%zz=v+1")), { bad: "%E0%A4%A", ok: "A", "k%zz": "v 1" });
+        });
+
+        test("__proto__ is an own property and nothing is polluted", () => {
+          const r = parseQuery("__proto__=x&constructor=y&polluted=no");
+          assert.equal(Object.getOwnPropertyDescriptor(r, "__proto__")?.value, "x");
+          assert.equal(Object.getOwnPropertyDescriptor(r, "constructor")?.value, "y");
+          assert.equal(({} as Record<string, unknown>).polluted, undefined);
+          const q = parseQuery("__proto__[polluted]=1&__proto__.polluted=1");
+          assert.equal(({} as Record<string, unknown>).polluted, undefined);
+          assert.ok(q);
+        });
+
+        test("empty input", () => {
+          assert.deepEqual(plain(parseQuery("")), {});
+          assert.deepEqual(plain(parseQuery("?")), {});
+        });

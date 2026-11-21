@@ -15,19 +15,8 @@ from typing import Any, Iterable
 
 from .config import Config, ModelSpec, Task
 from .graders import GradingContext, grade
-from .providers import (AnswerPending, Completion, Provider, ProviderError, Request,
-                        make_provider, manual_paths)
-
-
-class Limited:
-    """Decorator around any Provider that caps its concurrency."""
-
-    def __init__(self, inner: Provider, limit: int):
-        self.inner, self.sem = inner, asyncio.Semaphore(limit)
-
-    async def complete(self, req: Request) -> Completion:
-        async with self.sem:
-            return await self.inner.complete(req)
+from .limits import Limits
+from .providers import AnswerPending, Provider, ProviderError, Request, make_provider, manual_paths
 
 
 def _key(model: str, task: Task, rep: int) -> str:
@@ -55,20 +44,20 @@ def _reps(spec: ModelSpec, cfg: Config) -> int:
     return 1 if spec.provider == "manual" else cfg.run.repetitions
 
 
-def _limited(spec: ModelSpec, cfg: Config) -> Provider:
-    default = 1 if spec.provider in ("cli", "manual") else cfg.run.concurrency
+def _limited(spec: ModelSpec, cfg: Config, limits: Limits | None = None) -> Provider:
     settings = replace(cfg.run, timeout_s=spec.timeout_s) if spec.timeout_s else cfg.run
-    return Limited(make_provider(spec, settings), spec.concurrency or default)
+    return (limits or Limits(cfg.run)).wrap(spec, make_provider(spec, settings))
 
 
 async def generate(cfg: Config, tasks: list[Task], run_dir: Path, models: Iterable[ModelSpec]) -> None:
     out = _Appender(run_dir / "generations.jsonl")
     done = {r["key"] for r in read_jsonl(out.path) if not r.get("error")}
     jobs, pending = [], []
+    limits = Limits(cfg.run)  # one registry: caps are shared by every model on a subscription
 
     for spec in models:
         try:
-            provider = _limited(spec, cfg)
+            provider = _limited(spec, cfg, limits)
         except ProviderError as e:
             print(f"  ! skipping {spec.name}: {e}")
             continue
@@ -120,9 +109,10 @@ async def grade_all(cfg: Config, tasks: list[Task], run_dir: Path, regrade: bool
     by_id = {t.id: t for t in tasks}
 
     judges = []
+    limits = Limits(cfg.run)
     for spec in cfg.judges:
         try:
-            judges.append((spec, _limited(spec, cfg)))
+            judges.append((spec, _limited(spec, cfg, limits)))
         except ProviderError as e:
             print(f"  ! judge {spec.name} unavailable: {e}")
     ctx = GradingContext(cfg.run, judges)

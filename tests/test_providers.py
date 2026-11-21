@@ -10,7 +10,7 @@ import pytest
 from evalkit.config import Config, ModelSpec, RunSettings, load_config
 from evalkit.doctor import format_report, run_doctor
 from evalkit.providers import (CliProvider, ProviderError, Request, _error_summary, _is_retryable,
-                               parse_agy_json, parse_claude_json, parse_codex_jsonl)
+                               parse_agy_json, parse_claude_json, parse_codex_jsonl, parse_vibe_json)
 
 ROOT = Path(__file__).parent.parent
 
@@ -230,3 +230,85 @@ def test_isolation_probe_clean_and_off_by_default(tmp_path):
     assert probed.ok and probed.isolation == "clean"
     (plain,) = asyncio.run(run_doctor(cfg, cfg.models, []))
     assert plain.isolation is None  # no extra call unless asked
+
+
+# ---------------------------------------------------------------- vibe_json (Mistral Vibe)
+
+def _vibe_stdout(answer: str = "OK") -> str:
+    return json.dumps([
+        {"type": "message", "role": "user", "content": [{"type": "text", "text": "q"}]},
+        {"type": "reasoning", "text": "thinking..."},
+        {"type": "message", "role": "assistant", "generationStatus": "completed",
+         "content": [{"type": "text", "text": answer}]},
+    ])
+
+
+def _vibe_export(workdir: Path, **over) -> None:
+    d = workdir / "vibe-export"
+    d.mkdir(parents=True, exist_ok=True)
+    data = {"outcome": "finished", "error": None, "cost_usd": 0.0019,
+            "usage": {"input_tokens": 6898, "output_tokens": 3, "cached_input_tokens": 6784, "total_tokens": 6901}}
+    data.update(over)
+    (d / "export.json").write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_vibe_json_answer_from_stdout_usage_and_cost_from_export(tmp_path):
+    _vibe_export(tmp_path)
+    c = parse_vibe_json(_vibe_stdout("final answer"), 1.5, tmp_path)
+    assert c.text == "final answer" and c.input_tokens == 6898 and c.output_tokens == 3
+    assert c.cost_usd == pytest.approx(0.0019)
+
+
+def test_vibe_json_without_export_still_answers(tmp_path):
+    c = parse_vibe_json(_vibe_stdout(), 1.0, tmp_path)
+    assert c.text == "OK" and c.input_tokens is None
+
+
+def test_vibe_json_export_error_wins(tmp_path):
+    _vibe_export(tmp_path, outcome="infrastructure_failure", error="reasoning_effort 'medium' is not supported")
+    with pytest.raises(ProviderError, match="infrastructure_failure.*not supported"):
+        parse_vibe_json(_vibe_stdout(), 1.0, tmp_path)
+
+
+def test_vibe_unknown_model_on_stderr_is_reported(tmp_path):
+    # Real failure mode: exit 1, EMPTY stdout, the reason on stderr after an info line.
+    exe = _fake_cli(tmp_path, 'cat >/dev/null; echo "Reading API keys from the system keyring" >&2; '
+                              'echo "Error: Unknown model: glm-5-3. Available: mistral-medium-3.5" >&2; exit 1')
+    spec = ModelSpec(name="v", provider="cli", command=(exe, "-p"), parse="vibe_json")
+    with pytest.raises(ProviderError) as ei:
+        asyncio.run(CliProvider(spec, RunSettings(max_retries=0)).complete(Request(prompt="hi")))
+    assert "Unknown model: glm-5-3" in str(ei.value) and "keyring" not in str(ei.value)
+
+
+def test_vibe_end_to_end_reads_export_written_into_cwd(tmp_path):
+    # The fake CLI behaves like vibe: prompt on stdin, export.json into --output-dir under cwd.
+    script = ('read -r prompt; mkdir -p vibe-export; '
+              'echo \'{"outcome":"finished","error":null,"cost_usd":0.5,"usage":{"input_tokens":10,"output_tokens":2}}\''
+              ' > vibe-export/export.json; '
+              'printf \'[{"type":"message","role":"assistant","content":[{"type":"text","text":"got: %s"}]}]\' "$prompt"')
+    exe = _fake_cli(tmp_path, script)
+    spec = ModelSpec(name="v", provider="cli", command=(exe, "-p"), parse="vibe_json")
+    c = asyncio.run(CliProvider(spec, RunSettings()).complete(Request(prompt="-dash first")))
+    assert c.text == "got: -dash first" and c.cost_usd == 0.5 and c.input_tokens == 10
+
+
+def test_isolated_home_writes_generated_files_and_rejects_paths(tmp_path):
+    home = tmp_path / "vh"
+    spec = ModelSpec(name="v", provider="cli", command=("sh",),
+                     isolated_home={"env": "VIBE_HOME", "dir": str(home), "files": {"config.toml": "a = 1\n"}})
+    CliProvider(spec, RunSettings())
+    assert (home / "config.toml").read_text() == "a = 1\n"
+    bad = ModelSpec(name="v", provider="cli", command=("sh",),
+                    isolated_home={"env": "X", "dir": str(home), "files": {"../escape.toml": "x"}})
+    with pytest.raises(ProviderError, match="plain file name"):
+        CliProvider(bad, RunSettings())
+    assert not (tmp_path / "escape.toml").exists()
+
+
+@pytest.mark.parametrize("outcome", ["token_limit", "turn_limit", "time_limit"])
+def test_vibe_limit_with_partial_answer_is_an_error_not_an_answer(tmp_path, outcome):
+    # Real shape: exit 3, error=None, stdout holds partial "I'll implement it, then test" messages.
+    _vibe_export(tmp_path, outcome=outcome, stop_reason="interrupted", error=None, exit_code=3)
+    with pytest.raises(ProviderError, match=f"stopped before answering: outcome={outcome}") as ei:
+        parse_vibe_json(_vibe_stdout("I'll implement the module, then verify it."), 1.0, tmp_path)
+    assert not ei.value.retryable

@@ -74,6 +74,7 @@ export interface SubscriptionCost {
   total_calls: number
   est_input_tokens: number
   est_output_tokens: number
+  est_cost_usd: number
   models_without_history: number
 }
 
