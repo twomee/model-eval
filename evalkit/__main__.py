@@ -6,6 +6,7 @@
   python -m evalkit export   --config config.yaml          # prompts for `manual` models
   python -m evalkit validate --config config.yaml          # check config + tasks, no model calls
   python -m evalkit doctor   --config config.yaml          # one trivial call per model/judge: is it reachable?
+  python -m evalkit serve    --config config.yaml          # web UI on http://127.0.0.1:8765
 """
 from __future__ import annotations
 
@@ -27,7 +28,7 @@ def _csv(s: str | None) -> set[str] | None:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="evalkit")
-    ap.add_argument("command", choices=["run", "grade", "report", "export", "validate", "doctor"])
+    ap.add_argument("command", choices=["run", "grade", "report", "export", "validate", "doctor", "serve"])
     ap.add_argument("--config", default="config.yaml", type=Path)
     ap.add_argument("--tasks-dir", default="tasks", type=Path)
     ap.add_argument("--run", default="default", help="run name; results go to results/<run>/")
@@ -35,7 +36,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--tasks", help="comma-separated subset of task ids")
     ap.add_argument("--category", help="comma-separated subset of categories")
     ap.add_argument("--regrade", action="store_true", help="discard existing grades and re-grade")
+    ap.add_argument("--host", default="127.0.0.1", help="serve: bind address (default: this machine only)")
+    ap.add_argument("--port", default=8765, type=int, help="serve: port")
     args = ap.parse_args(argv)
+
+    if args.command == "serve":
+        return _serve(args)
 
     cfg = load_config(args.config)
     tasks = load_tasks(args.tasks_dir)
@@ -96,6 +102,26 @@ def main(argv: list[str] | None = None) -> int:
             lo, hi = p["ci90"]
             he = f"  HE vs EN {p['he_vs_en']:+.2f}" if p.get("he_vs_en") is not None else ""
             print(f"  {i}. {p['name']:<20} {p['overall']:.3f}  (90% CI {lo:.2f}–{hi:.2f}){he}")
+    return 0
+
+
+def _serve(args: argparse.Namespace) -> int:
+    try:
+        import uvicorn
+
+        from .api.app import LOCAL_HOSTS, create_app
+    except ImportError as e:  # web deps are optional for CLI-only use
+        print(f"serve needs the web extras: pip install -r requirements.txt ({e})", file=sys.stderr)
+        return 1
+    load_config(args.config)  # fail fast on a broken config, before the browser opens
+    hosts = LOCAL_HOSTS
+    if args.host not in ("127.0.0.1", "localhost", "::1"):
+        print(f"WARNING: binding {args.host} exposes this UI to your network. Anyone who can reach it "
+              "can spend your subscription quota. There is no authentication.", file=sys.stderr)
+        hosts = [*LOCAL_HOSTS, args.host]
+    app = create_app(args.config, args.tasks_dir, allowed_hosts=hosts)
+    print(f"evalkit UI: http://{'localhost' if args.host == '127.0.0.1' else args.host}:{args.port}")
+    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
     return 0
 
 
