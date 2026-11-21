@@ -27,7 +27,7 @@ def test_list_models_includes_judges_and_hides_internals(client):
     roles = {m["name"]: m["role"] for m in body["models"]}
     assert roles["mock-good"] == "model" and roles["judge-mock-a"] == "judge"
     good = next(m for m in body["models"] if m["name"] == "mock-good")
-    assert good["model_id"] == "good" and good["vendor"] == "mock"
+    assert good["model_id"] == "good" and good["vendor"] == "mock" and good["effort"] is None
     assert "command" not in good and "isolated_home" not in good  # argv/env are not API surface
 
 

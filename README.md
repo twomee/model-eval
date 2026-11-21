@@ -27,6 +27,22 @@ python -m evalkit run --run smoke --tasks gen_capacity_estimate
 python -m evalkit run --run v1
 ```
 
+### Models × reasoning effort
+One config entry can expand into several competitors:
+```yaml
+- name: gpt-sol
+  command: [codex, exec, ..., -m, gpt-6.2-sol, -c, 'model_reasoning_effort="{effort}"', "{prompt}"]
+  variants: {effort: [low, medium, high]}     # -> gpt-sol-low, gpt-sol-medium, gpt-sol-high
+  timeout_s: 900                              # high effort thinks longer than run.timeout_s
+```
+- **Use a funnel, not a grid.** Every model × every effort is ~75 competitors × 66 calls. Stage 1: each
+  current-generation model at one effort (the default `config.yaml`). Stage 2: sweep effort on the top 2-3.
+- **Always pin effort.** In an isolated home, unpinned codex runs with reasoning effort `none`.
+- **Effort names aren't comparable across vendors.** Compare models at similar latency/cost, and use
+  effort sweeps to ask "does `high` buy enough score for its extra latency *on this model*?"
+- **Validated at load time,** because the CLIs don't: `claude --effort bogus` silently uses the default, and
+  codex accepts efforts a model doesn't support (checked against `~/.codex/models_cache.json`).
+
 ### Web UI (local, any OS)
 ```bash
 cd web && npm ci && npm run build && cd ..   # once, and after UI changes (needs Node 20+)

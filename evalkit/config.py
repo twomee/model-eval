@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from .variants import effort_error, expand_variants
 
 
 @dataclass(frozen=True)
@@ -30,6 +33,8 @@ class ModelSpec:
     parse: str = "text"             # cli output: "text" | "claude_json" | "codex_jsonl"
     # cli: run with a clean home dir {env, dir, link: [files to symlink in]} - see CliProvider
     isolated_home: dict[str, Any] | None = None
+    timeout_s: float | None = None  # per-model override of run.timeout_s (high effort thinks longer)
+    variant: dict[str, str] = field(default_factory=dict)  # e.g. {"effort": "high"} - see variants.py
 
     @property
     def model_id(self) -> str | None:
@@ -41,6 +46,18 @@ class ModelSpec:
             if flag in self.command[:-1]:
                 return self.command[self.command.index(flag) + 1]
         return None
+
+    @property
+    def effort(self) -> str | None:
+        """Reasoning effort actually passed to the CLI, read from the final command so it is
+        right whether it came from a variant or was written into the command directly."""
+        cmd = self.command
+        for i, arg in enumerate(cmd[:-1]):
+            if arg == "--effort":
+                return cmd[i + 1]
+            if arg == "-c" and (m := re.fullmatch(r'model_reasoning_effort\s*=\s*"?([\w-]+)"?', cmd[i + 1])):
+                return m.group(1)
+        return self.variant.get("effort")
 
     def cost(self, tokens_in: int, tokens_out: int) -> float | None:
         if self.price_in is None or self.price_out is None:
@@ -102,16 +119,31 @@ def _model_from_dict(d: dict[str, Any]) -> ModelSpec:
         concurrency=d.get("concurrency"),
         parse=d.get("parse", "text"),
         isolated_home=d.get("isolated_home"),
+        timeout_s=d.get("timeout_s"),
+        variant=d.get("variant") or {},
     )
+
+
+def _codex_cache(spec: ModelSpec) -> Path:
+    home = (spec.isolated_home or {}).get("dir", "~/.codex")
+    return Path(home).expanduser() / "models_cache.json"
+
+
+def _load_models(entries: list[dict[str, Any]]) -> list[ModelSpec]:
+    specs = [_model_from_dict(e) for entry in entries for e in expand_variants(entry)]
+    errors = [err for s in specs if (err := effort_error(s.name, s.command, s.model_id, s.effort, _codex_cache(s)))]
+    if errors:
+        raise ValueError("invalid effort settings:\n  " + "\n  ".join(errors))
+    return specs
 
 
 def load_config(path: Path) -> Config:
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-    models = [_model_from_dict(m) for m in raw["models"]]
-    judges = [_model_from_dict(j) for j in raw.get("judges", [])]
+    models = _load_models(raw["models"])
+    judges = _load_models(raw.get("judges", []))
     names = [m.name for m in models]
-    if len(names) != len(set(names)):
-        raise ValueError(f"Duplicate model names in {path}: {names}")
+    if dupes := sorted({n for n in names if names.count(n) > 1}):
+        raise ValueError(f"Duplicate model names in {path}: {dupes}")
     return Config(
         run=RunSettings(**(raw.get("run") or {})),
         models=models,

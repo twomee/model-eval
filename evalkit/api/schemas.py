@@ -19,6 +19,7 @@ class ModelOut(BaseModel):
     provider: str
     vendor: str
     model_id: str | None = Field(description="None = the CLI chooses (unpinned)")
+    effort: str | None = Field(description="Reasoning effort passed to the model; None = provider default")
 
 
 class ModelsOut(BaseModel):
