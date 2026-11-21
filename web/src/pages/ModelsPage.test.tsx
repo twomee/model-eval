@@ -8,9 +8,9 @@ import { ModelsPage } from './ModelsPage'
 const MODELS: ModelsResponse = {
   config_path: 'config.yaml',
   models: [
-    { name: 'claude-opus', role: 'model', provider: 'cli', vendor: 'claude', model_id: 'claude-opus-5-5' },
-    { name: 'gpt-sol', role: 'model', provider: 'cli', vendor: 'openai', model_id: null },
-    { name: 'judge-claude', role: 'judge', provider: 'cli', vendor: 'claude', model_id: 'claude-opus-5-5' },
+    { name: 'claude-opus', role: 'model', provider: 'cli', vendor: 'claude', model_id: 'claude-opus-5-5', effort: 'high' },
+    { name: 'gpt-sol', role: 'model', provider: 'cli', vendor: 'openai', model_id: null, effort: null },
+    { name: 'judge-claude', role: 'judge', provider: 'cli', vendor: 'claude', model_id: 'claude-opus-5-5', effort: 'medium' },
   ],
 }
 
@@ -45,6 +45,8 @@ describe('ModelsPage', () => {
     expect(competitors).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Judges' })).toBeInTheDocument()
     expect(within(row('gpt-sol')).getByText('unpinned')).toBeInTheDocument()
+    expect(within(row('claude-opus')).getByText('high')).toBeInTheDocument()
+    expect(within(row('gpt-sol')).getByText('default')).toBeInTheDocument()
     expect(within(row('claude-opus')).getByText('not checked')).toBeInTheDocument()
   })
 

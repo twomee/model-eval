@@ -34,44 +34,89 @@ category_weights:
 
 models:
   # ---------- subscriptions via official CLIs ----------
+  #
+  # LINEUP STRATEGY (a funnel, not a grid): every model x every effort is ~75 competitors x 66 calls.
+  #   Stage 1 (below): every CURRENT-generation model at one everyday effort -> find the top 2-3.
+  #   Stage 2: sweep effort only on those, e.g. variants: {effort: [low, medium, high, xhigh]}.
+  # Legacy / previous-generation GPT models are left out: you'd never pick one over its successor.
+  #
+  # EFFORT: always pin it. Unpinned, codex in an isolated home runs with reasoning effort "none",
+  # and claude uses whatever its default is this month. Effort names are NOT comparable across
+  # vendors (claude "medium" != gpt "medium"): compare models at similar latency/cost instead.
+  # Variant names always carry the suffix (claude-opus-medium) so adding values later keeps results.
+  # Higher effort thinks longer: raise timeout_s on entries sweeping xhigh/max.
+
   # -p = headless print mode; JSON output gives token usage + an API-list-price cost estimate.
   # --safe-mode: no CLAUDE.md / plugins / hooks / MCP.  --tools "": answer in text, don't act.
   # (--bare would be cleaner but requires ANTHROPIC_API_KEY, i.e. not your subscription.)
+  # Claude efforts: low, medium, high, xhigh, max.
   - name: claude-opus
     provider: cli
     command: ["claude", "-p", "--output-format", "json", "--safe-mode", "--tools", "",
-              "--no-session-persistence", "--model", "claude-opus-5-5"]
+              "--no-session-persistence", "--model", "claude-opus-5-5", "--effort", "{effort}"]
     parse: claude_json
+    variants: {effort: [medium]}
 
   - name: claude-sonnet
     provider: cli
     command: ["claude", "-p", "--output-format", "json", "--safe-mode", "--tools", "",
-              "--no-session-persistence", "--model", "claude-sonnet-5-5"]
+              "--no-session-persistence", "--model", "claude-sonnet-5-5", "--effort", "{effort}"]
     parse: claude_json
+    variants: {effort: [medium]}
+
+  - name: claude-haiku
+    provider: cli
+    command: ["claude", "-p", "--output-format", "json", "--safe-mode", "--tools", "",
+              "--no-session-persistence", "--model", "claude-haiku-5-5", "--effort", "{effort}"]
+    parse: claude_json
+    variants: {effort: [medium]}
 
   # Needs usage credits on top of the subscription ("Fable 5.2 requires usage credits").
   # - name: claude-fable
   #   provider: cli
   #   command: ["claude", "-p", "--output-format", "json", "--safe-mode", "--tools", "",
-  #             "--no-session-persistence", "--model", "claude-fable-5-2"]
+  #             "--no-session-persistence", "--model", "claude-fable-5-2", "--effort", "{effort}"]
   #   parse: claude_json
+  #   variants: {effort: [medium]}
 
   # codex: --ignore-user-config does NOT skip ~/.codex/AGENTS.md, so `isolated_home` runs it with a
   # clean CODEX_HOME holding only a symlink to your login. -s read-only: can't write anywhere.
-  # Models on a ChatGPT plan: see ~/.codex/models_cache.json (gpt-6.2-sol is the CLI default).
-  - name: gpt-sol
+  # Models + supported efforts per model: ~/.codex/models_cache.json (evalkit validates against it).
+  # GPT efforts: low, medium, high, xhigh, max (+ ultra on sol/astra/terra; luna tops out at max).
+  - name: gpt-sol            # "fast, go-to model for coding and everyday work"
     provider: cli
     command: ["codex", "exec", "--skip-git-repo-check", "--ephemeral", "-s", "read-only", "--json",
-              "-m", "gpt-6.2-sol", "{prompt}"]
+              "-m", "gpt-6.2-sol", "-c", 'model_reasoning_effort="{effort}"', "{prompt}"]
     parse: codex_jsonl
     isolated_home: &codex_home {env: CODEX_HOME, dir: ~/.cache/evalkit/codex-home, link: [~/.codex/auth.json]}
+    variants: {effort: [medium]}
+    # Stage 2 example:
+    # variants: {effort: [low, medium, high, xhigh]}
+    # timeout_s: 900
 
-  - name: gpt-astra
+  - name: gpt-astra          # "most capable model for complex coding and professional work"
     provider: cli
     command: ["codex", "exec", "--skip-git-repo-check", "--ephemeral", "-s", "read-only", "--json",
-              "-m", "gpt-6.2-astra", "{prompt}"]
+              "-m", "gpt-6.2-astra", "-c", 'model_reasoning_effort="{effort}"', "{prompt}"]
     parse: codex_jsonl
     isolated_home: *codex_home
+    variants: {effort: [medium]}
+
+  - name: gpt-terra          # "efficient; excels at visual understanding and computer use"
+    provider: cli
+    command: ["codex", "exec", "--skip-git-repo-check", "--ephemeral", "-s", "read-only", "--json",
+              "-m", "gpt-6.1-terra", "-c", 'model_reasoning_effort="{effort}"', "{prompt}"]
+    parse: codex_jsonl
+    isolated_home: *codex_home
+    variants: {effort: [medium]}
+
+  - name: gpt-luna           # "fast and affordable model for easier tasks"
+    provider: cli
+    command: ["codex", "exec", "--skip-git-repo-check", "--ephemeral", "-s", "read-only", "--json",
+              "-m", "gpt-6-luna", "-c", 'model_reasoning_effort="{effort}"', "{prompt}"]
+    parse: codex_jsonl
+    isolated_home: *codex_home
+    variants: {effort: [medium]}
 
   # ---------- subscriptions without a CLI: copy/paste ----------
   # Gemini CLI has no individual-subscription login. Paste into the Gemini app, or use the
@@ -123,11 +168,11 @@ judges:
   - name: judge-claude
     provider: cli
     command: ["claude", "-p", "--output-format", "json", "--safe-mode", "--tools", "",
-              "--no-session-persistence", "--model", "claude-opus-5-5"]
+              "--no-session-persistence", "--model", "claude-opus-5-5", "--effort", "medium"]
     parse: claude_json
   - name: judge-gpt
     provider: cli
     command: ["codex", "exec", "--skip-git-repo-check", "--ephemeral", "-s", "read-only", "--json",
-              "-m", "gpt-6.2-sol", "{prompt}"]
+              "-m", "gpt-6.2-sol", "-c", 'model_reasoning_effort="medium"', "{prompt}"]
     parse: codex_jsonl
     isolated_home: *codex_home

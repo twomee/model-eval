@@ -9,6 +9,7 @@ export interface ModelInfo {
   provider: string
   vendor: string
   model_id: string | null
+  effort: string | null
 }
 
 export interface ModelsResponse {

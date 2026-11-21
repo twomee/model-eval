@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -57,7 +57,8 @@ def _reps(spec: ModelSpec, cfg: Config) -> int:
 
 def _limited(spec: ModelSpec, cfg: Config) -> Provider:
     default = 1 if spec.provider in ("cli", "manual") else cfg.run.concurrency
-    return Limited(make_provider(spec, cfg.run), spec.concurrency or default)
+    settings = replace(cfg.run, timeout_s=spec.timeout_s) if spec.timeout_s else cfg.run
+    return Limited(make_provider(spec, settings), spec.concurrency or default)
 
 
 async def generate(cfg: Config, tasks: list[Task], run_dir: Path, models: Iterable[ModelSpec]) -> None:

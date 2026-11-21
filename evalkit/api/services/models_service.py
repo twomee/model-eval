@@ -55,4 +55,5 @@ class ModelsService:
 
 
 def _to_out(spec: ModelSpec, role: str) -> ModelOut:
-    return ModelOut(name=spec.name, role=role, provider=spec.provider, vendor=vendor_of(spec), model_id=spec.model_id)
+    return ModelOut(name=spec.name, role=role, provider=spec.provider, vendor=vendor_of(spec), model_id=spec.model_id,
+                    effort=spec.effort)

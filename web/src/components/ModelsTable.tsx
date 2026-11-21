@@ -21,6 +21,7 @@ export function ModelsTable({ title, models, results, pending, onCheck }: Props)
               <th scope="col">name</th>
               <th scope="col">vendor</th>
               <th scope="col">model</th>
+              <th scope="col">effort</th>
               <th scope="col">provider</th>
               <th scope="col">status</th>
               <th scope="col">detail</th>
@@ -47,6 +48,7 @@ export function ModelsTable({ title, models, results, pending, onCheck }: Props)
                         </span>
                       ))}
                   </td>
+                  <td>{m.effort ?? <span className="muted">default</span>}</td>
                   <td>{m.provider}</td>
                   <td>
                     <StatusBadge check={check} pending={busy} />
