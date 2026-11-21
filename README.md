@@ -57,7 +57,18 @@ a remote server has neither your logins nor your machine. The server binds `127.
 foreign `Host` headers (DNS rebinding) and non-JSON writes (CSRF), because a request to it spends
 your subscription quota. `--host 0.0.0.0` exposes it to your network: there is no authentication.
 
-### Manual models (e.g. Gemini app, Mistral Le Chat, GLM)
+### Gemini (Antigravity CLI, on a Google AI Pro subscription)
+Gemini CLI stopped serving personal AI Pro/Ultra accounts on 2026-06-18; its replacement is `agy`:
+```bash
+# install: https://antigravity.google/docs/install   (read the install script before piping it to bash)
+agy                      # once, interactively: sign in with "Google OAuth"; login is cached in the OS keyring
+agy models               # the slugs on your plan; effort is part of the slug (gemini-4-neon-high)
+python -m evalkit doctor --isolation --models gemini-neon-medium
+```
+`agy` has no documented flag to skip user rules or disable tools, so `doctor --isolation` asks each model
+whether it sees personal instruction files. It caught the CLAUDE.md and AGENTS.md leaks in claude and codex.
+
+### Manual models (e.g. Mistral Le Chat, GLM)
 ```bash
 python -m evalkit export            # writes manual/<model>/<task>.prompt.md
 # paste each prompt into the chat UI, save the reply to <task>.answer.md in the same folder
@@ -73,6 +84,7 @@ Tip: open a fresh conversation per prompt so earlier context doesn't leak into t
 | `grade --run v1 --regrade` | re-grade without regenerating answers (after changing a rubric) |
 | `report --run v1` | rebuild the report |
 | `doctor --models claude-opus` | preflight a subset; exit code 1 if anything fails |
+| `doctor --isolation` | also ask each model if it sees personal instruction files (1 extra call each) |
 
 ## Architecture
 

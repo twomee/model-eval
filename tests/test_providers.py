@@ -10,7 +10,7 @@ import pytest
 from evalkit.config import Config, ModelSpec, RunSettings, load_config
 from evalkit.doctor import format_report, run_doctor
 from evalkit.providers import (CliProvider, ProviderError, Request, _error_summary, _is_retryable,
-                               parse_claude_json, parse_codex_jsonl)
+                               parse_agy_json, parse_claude_json, parse_codex_jsonl)
 
 ROOT = Path(__file__).parent.parent
 
@@ -170,3 +170,63 @@ def test_cli_isolated_home_missing_login_fails_fast(tmp_path):
 ])
 def test_model_id(spec, expected):
     assert spec.model_id == expected
+
+
+# ---------------------------------------------------------------- agy_json (Antigravity CLI / Gemini)
+
+AGY_OK = ('{"conversation_id":"055a","status":"SUCCESS","response":"A git rebase rewrites history.\\n",'
+          '"duration_seconds":7.16,"num_turns":1,"usage":{"input_tokens":10415,"output_tokens":657,'
+          '"thinking_tokens":616,"cache_read_tokens":8113,"total_tokens":11072}}')  # docs example
+
+
+def test_agy_json_success_uses_documented_envelope():
+    c = parse_agy_json("some diagnostic line\n" + AGY_OK, 7.2)
+    assert c.text.startswith("A git rebase") and c.input_tokens == 10415 and c.output_tokens == 657
+
+
+@pytest.mark.parametrize("status,error,retryable", [
+    ("ERROR", "model 'does-not-exist-model' not found", False),
+    ("ERROR", "429 rate limit exceeded", True),
+    ("CANCELED", None, False),
+])
+def test_agy_json_non_success_status_is_error(status, error, retryable):
+    body = {"status": status, **({"error": error} if error else {})}
+    with pytest.raises(ProviderError, match=status) as ei:
+        parse_agy_json(json.dumps(body), 1.0)
+    assert ei.value.retryable is retryable
+
+
+def test_agy_json_without_envelope_is_error():
+    with pytest.raises(ProviderError, match="no JSON envelope"):
+        parse_agy_json("authentication required", 1.0)
+
+
+def test_agy_exit_1_error_comes_from_stdout_envelope(tmp_path):
+    exe = _fake_cli(tmp_path, """echo '{"status":"ERROR","error":"unknown model gemini-4-argon-low"}'; exit 1""")
+    spec = ModelSpec(name="g", provider="cli", command=(exe, "-p", "{prompt}"), parse="agy_json")
+    with pytest.raises(ProviderError, match="unknown model gemini-4-argon-low"):
+        asyncio.run(CliProvider(spec, RunSettings(max_retries=0)).complete(Request(prompt="hi")))
+
+
+# ---------------------------------------------------------------- doctor --isolation
+
+def _probe_cfg(exe: str) -> Config:
+    return Config(run=RunSettings(), category_weights={}, judges=[],
+                  models=[ModelSpec(name="leaky", provider="cli", command=(exe, "{prompt}"))])
+
+
+def test_isolation_probe_flags_leaked_instructions(tmp_path):
+    # Answers OK to the ping, but quotes a personal instruction file when probed.
+    exe = _fake_cli(tmp_path, 'case "$1" in *OK*) echo OK;; *) echo "# Who I Am";; esac')
+    (check,) = asyncio.run(run_doctor(_probe_cfg(exe), _probe_cfg(exe).models, [], probe_isolation=True))
+    assert not check.ok and check.isolation == "LEAK: # Who I Am"
+    assert "isolation: LEAK" in format_report(_probe_cfg(exe), [check])[0]
+
+
+def test_isolation_probe_clean_and_off_by_default(tmp_path):
+    exe = _fake_cli(tmp_path, 'case "$1" in *OK*) echo OK;; *) echo "NONE";; esac')
+    cfg = _probe_cfg(exe)
+    (probed,) = asyncio.run(run_doctor(cfg, cfg.models, [], probe_isolation=True))
+    assert probed.ok and probed.isolation == "clean"
+    (plain,) = asyncio.run(run_doctor(cfg, cfg.models, []))
+    assert plain.isolation is None  # no extra call unless asked

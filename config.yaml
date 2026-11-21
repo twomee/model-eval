@@ -8,8 +8,8 @@
 #
 # CLI flags change between versions: verify each command with `<cli> --help` before the first run,
 # then run `python -m evalkit doctor` (one trivial call per model/judge, fails in seconds).
-# Last verified 2026-11-21: claude 2.1.330, codex 0.171.0. Gemini CLI: no individual-subscription
-# login, so gemini is manual (Gemini app) or API (AI Studio key) below.
+# Last verified 2026-11-21: claude 2.1.330, codex 0.171.0. Gemini: Gemini CLI stopped serving personal
+# AI Pro/Ultra accounts on 2026-06-18; its replacement is the Antigravity CLI (`agy`), used below.
 #
 # ISOLATION: a CLI is an agent wrapped around a model. By default it loads your personal setup
 # (claude: ~/.claude/CLAUDE.md, plugins, MCP, ~30k tokens of tools; codex: ~/.codex/AGENTS.md and
@@ -118,12 +118,55 @@ models:
     isolated_home: *codex_home
     variants: {effort: [medium]}
 
-  # ---------- subscriptions without a CLI: copy/paste ----------
-  # Gemini CLI has no individual-subscription login. Paste into the Gemini app, or use the
-  # free-tier API (gemini-api below) - which is automated and repeatable, so prefer it if you can.
-  - name: gemini
-    provider: manual
+  # Gemini via the Antigravity CLI on your Google AI Pro subscription.
+  # Setup (once): install agy (https://antigravity.google/docs/install), run `agy` interactively and
+  # sign in with "Google OAuth", then `agy models` to see the slugs on your plan. Headless runs reuse
+  # the login cached in your OS keyring.
+  # Effort is part of the model slug (gemini-4-neon-medium), so the variant fills the slug.
+  # On this plan (agy 1.5.14, `agy models`, 2026-11-21): neon + hydrogen low..xhigh, argon + 3.8-flash
+  # low..high, gpt-oss-120b medium only. agy exits 1 on an unknown slug (no silent fallback), so a
+  # wrong combination fails in `doctor`, not in the scores. agy also serves Claude Opus/Sonnet: skipped,
+  # they're called directly above. Orchestrators route between models: not a single model, skipped.
+  # Isolation: no documented flag skips user rules, so verify with `doctor --isolation` (clean on 2026-11-21).
+  - name: gemini-neon
+    provider: cli
+    command: ["agy", "-p", "{prompt}", "--output-format", "json", "--disable-slash-commands", "--sandbox",
+              "--model", "gemini-4-neon-{effort}"]
+    parse: agy_json
+    variants: {effort: [low, medium, high, xhigh]}   # every level on this plan
+    timeout_s: 900                    # xhigh thinks longer than run.timeout_s (300)
 
+  - name: gemini-argon
+    provider: cli
+    command: ["agy", "-p", "{prompt}", "--output-format", "json", "--disable-slash-commands", "--sandbox",
+              "--model", "gemini-4-argon-{effort}"]
+    parse: agy_json
+    variants: {effort: [low, medium, high]}   # every level on this plan
+
+  - name: gemini-hydrogen
+    provider: cli
+    command: ["agy", "-p", "{prompt}", "--output-format", "json", "--disable-slash-commands", "--sandbox",
+              "--model", "gemini-4-hydrogen-{effort}"]
+    parse: agy_json
+    variants: {effort: [low, medium, high, xhigh]}   # every level on this plan
+    timeout_s: 900                    # xhigh thinks longer than run.timeout_s (300)
+
+  - name: gemini-flash
+    provider: cli
+    command: ["agy", "-p", "{prompt}", "--output-format", "json", "--disable-slash-commands", "--sandbox",
+              "--model", "gemini-3.8-flash-{effort}"]
+    parse: agy_json
+    variants: {effort: [medium]}
+
+  # OpenAI's open-weight model, served through Antigravity: a different model than codex's GPTs.
+  - name: gpt-oss
+    provider: cli
+    command: ["agy", "-p", "{prompt}", "--output-format", "json", "--disable-slash-commands", "--sandbox",
+              "--model", "gpt-oss-120b-{effort}"]
+    parse: agy_json
+    variants: {effort: [medium]}
+
+  # ---------- subscriptions without a CLI: copy/paste ----------
   - name: mistral-lechat
     provider: manual
 
@@ -176,3 +219,10 @@ judges:
               "-m", "gpt-6.2-sol", "-c", 'model_reasoning_effort="medium"', "{prompt}"]
     parse: codex_jsonl
     isolated_home: *codex_home
+  # Third vendor (after agy setup + `doctor --isolation`): a 3-family panel dilutes any one
+  # family's self-preference further, at the cost of one more call per rubric-graded answer.
+  # - name: judge-gemini
+  #   provider: cli
+  #   command: ["agy", "-p", "{prompt}", "--output-format", "json", "--disable-slash-commands", "--sandbox",
+  #             "--model", "gemini-4-neon-medium"]
+  #   parse: agy_json

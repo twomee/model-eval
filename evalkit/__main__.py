@@ -36,6 +36,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--tasks", help="comma-separated subset of task ids")
     ap.add_argument("--category", help="comma-separated subset of categories")
     ap.add_argument("--regrade", action="store_true", help="discard existing grades and re-grade")
+    ap.add_argument("--isolation", action="store_true",
+                    help="doctor: also ask each model whether it sees personal instruction files (1 extra call)")
     ap.add_argument("--host", default="127.0.0.1", help="serve: bind address (default: this machine only)")
     ap.add_argument("--port", default=8765, type=int, help="serve: port")
     args = ap.parse_args(argv)
@@ -79,7 +81,7 @@ def main(argv: list[str] | None = None) -> int:
                       f"-> self-preference bias. Mitigation: a multi-vendor judge panel.")
         return 0
     if args.command == "doctor":
-        checks = asyncio.run(run_doctor(cfg, models, [t.id for t in tasks]))
+        checks = asyncio.run(run_doctor(cfg, models, [t.id for t in tasks], probe_isolation=args.isolation))
         text, all_ok = format_report(cfg, checks)
         print(text)
         return 0 if all_ok else 1
