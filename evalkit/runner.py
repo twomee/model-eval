@@ -92,7 +92,8 @@ async def generate(cfg: Config, tasks: list[Task], run_dir: Path, models: Iterab
             comp = await provider.complete(req)
             record.update(output=comp.text, latency_s=round(comp.latency_s, 3),
                           input_tokens=comp.input_tokens, output_tokens=comp.output_tokens,
-                          cost_usd=spec.cost(comp.input_tokens or 0, comp.output_tokens or 0))
+                          cost_usd=comp.cost_usd if comp.cost_usd is not None
+                          else spec.cost(comp.input_tokens or 0, comp.output_tokens or 0))
         except AnswerPending as e:
             pending.append(str(e))
             return

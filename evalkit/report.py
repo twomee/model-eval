@@ -157,9 +157,11 @@ def write_html(summary: dict[str, Any], path: Path) -> None:
     head = "".join(f"<th>{e(c)}<br><small>w={weights.get(c, 1.0)}</small></th>" for c in cats)
     he_head = "<th>HE vs EN<br><small>Δ score</small></th>" if summary["has_pairs"] else ""
     rows = []
+    # Computed outside the f-string: nested same-type quotes are a SyntaxError before Python 3.12.
+    empty_colspan = len(cats) + 7 + int(summary["has_pairs"])
     for i, p in enumerate(models, 1):
         if p["empty"]:
-            rows.append(f"<tr><td>{i}</td><td>{e(p['name'])}</td><td colspan='{len(cats) + 7 + summary["has_pairs"]}' class='na'>"
+            rows.append(f"<tr><td>{i}</td><td>{e(p['name'])}</td><td colspan='{empty_colspan}' class='na'>"
                         f"no graded results (errors: {p['errors']})</td></tr>")
             continue
         lo, hi = p["ci90"]

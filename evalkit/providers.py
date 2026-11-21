@@ -42,6 +42,9 @@ class Completion:
     latency_s: float
     input_tokens: int | None = None
     output_tokens: int | None = None
+    # Cost reported by the provider itself (e.g. Claude Code's API-list-price estimate).
+    # When None, the runner falls back to the price table in config.
+    cost_usd: float | None = None
 
 
 class ProviderError(Exception):
@@ -183,10 +186,8 @@ class CliProvider:
                     latency = time.perf_counter() - t0
                     if proc.returncode == 0:
                         return self._parse(out.decode(errors="replace"), latency)
-                    msg = err.decode(errors="replace").strip()[-500:]
-                    # Subscription CLIs usually signal limits in stderr text, not a status code.
-                    retryable = bool(re.search(r"rate.?limit|429|overloaded|try again", msg, re.I))
-                    last_err = ProviderError(f"exit {proc.returncode}: {msg}", retryable)
+                    msg = _error_summary(err.decode(errors="replace"))
+                    last_err = ProviderError(f"exit {proc.returncode}: {msg}", _is_retryable(msg))
             if not last_err.retryable:
                 break
             await asyncio.sleep(min(120, 5 * 2 ** attempt))
@@ -194,13 +195,46 @@ class CliProvider:
 
     def _parse(self, stdout: str, latency: float) -> Completion:
         if self.spec.parse == "claude_json":
-            data = json.loads(stdout)
-            if data.get("is_error"):
-                raise ProviderError(f"claude error: {data.get('result')}", retryable=True)
-            usage = data.get("usage") or {}
-            return Completion(data.get("result", ""), latency,
-                              usage.get("input_tokens"), usage.get("output_tokens"))
+            return parse_claude_json(stdout, latency)
         return Completion(stdout.strip(), latency)
+
+
+_RETRYABLE = re.compile(r"rate.?limit|429|overloaded|try again|temporarily unavailable", re.I)
+
+
+def _is_retryable(msg: str) -> bool:
+    """Subscription CLIs signal limits in text, not status codes. Anything else (bad model id,
+    no credits, auth) is permanent: retrying it just burns minutes of backoff."""
+    return bool(_RETRYABLE.search(msg))
+
+
+def _error_summary(stderr: str, limit: int = 500) -> str:
+    """CLIs log a lot to stderr (codex dumps whole JSON payloads). The useful part is the
+    LAST line that looks like an error; fall back to the tail when nothing does."""
+    lines = [ln.strip() for ln in stderr.splitlines() if ln.strip()]
+    errors = [ln for ln in lines if re.match(r"(error|fatal)\b", ln, re.I) or ln.startswith("ERROR:")]
+    return (errors[-1] if errors else "\n".join(lines))[-limit:]
+
+
+def parse_claude_json(stdout: str, latency: float) -> Completion:
+    """`claude -p --output-format json` -> Completion.
+
+    Token accounting: `usage.input_tokens` only counts UNCACHED tokens (often single digits);
+    the real prompt size is input + cache_creation + cache_read. Reporting only the first
+    would make Claude look ~1000x cheaper on input than an API provider.
+    """
+    try:
+        data = json.loads(stdout)
+    except json.JSONDecodeError as e:
+        raise ProviderError(f"claude: non-JSON output: {stdout[:300]!r}") from e
+    if data.get("is_error"):
+        msg = str(data.get("result"))
+        raise ProviderError(f"claude error: {msg}", retryable=_is_retryable(msg))
+    usage = data.get("usage") or {}
+    parts = [usage.get(k) for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")]
+    tokens_in = sum(p for p in parts if p) if any(p is not None for p in parts) else None
+    return Completion(data.get("result", ""), latency, tokens_in, usage.get("output_tokens"),
+                      cost_usd=data.get("total_cost_usd"))
 
 
 # --------------------------------------------------------------------------- Manual (copy/paste)
@@ -245,6 +279,7 @@ class MockProvider:
             "good": ref,
             "sloppy": ref[: len(ref) // 2] if random.random() < 0.5 else ref,
             "broken": "I'm not sure. Here is some code:\n```python\ndef f(): pass\n```",
+            "judge": ref,  # a mock judge asked a non-judge question (e.g. `doctor` ping)
         }[self.spec.model]
         return Completion(text, random.uniform(0.5, 3), len(req.prompt) // 4, len(text) // 4)
 
