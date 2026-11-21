@@ -89,16 +89,21 @@ class Limits:
     def close(self, sub: str, reason: str) -> None:
         g = self.gate(sub)
         now = self.clock()
-        if g.open.is_set():
+        was_open, previous_reset = g.open.is_set(), g.reset_at
+        if was_open:
             g.since = now
         g.open.clear()
         g.reason = reason
         parsed = quota_reset_at(reason, now)
         # +60 s: providers' clocks and "9:15 PM" rounding; a probe a minute late beats one too early.
         g.reset_at = parsed + 60 if parsed and parsed > now else now + self.settings.quota_probe_min * 60
-        if self.settings.on_quota == "wait" and now - g.since >= self.settings.quota_max_wait_h * 3600:
-            g.gave_up = True
-        if self.listener:
+        newly_gave_up = False
+        if self.settings.on_quota == "wait" and not g.gave_up and now - g.since >= self.settings.quota_max_wait_h * 3600:
+            g.gave_up = newly_gave_up = True
+        # Notify on CHANGES only: calls already in flight when the gate closed each come back with
+        # the same quota error; one "paused" line is news, ten identical ones bury the progress.
+        changed = was_open or newly_gave_up or abs(g.reset_at - previous_reset) > 120
+        if self.listener and changed:
             self.listener(sub, None if g.gave_up or self.settings.on_quota != "wait" else g.reset_at, reason)
 
     def reopen(self, sub: str) -> None:

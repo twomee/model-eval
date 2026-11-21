@@ -226,3 +226,11 @@ def test_cancel_while_waiting_or_probing_leaves_no_stuck_lock():
 def test_bad_on_quota_value_is_rejected():
     with pytest.raises(ValueError, match="on_quota"):
         RunSettings(on_quota="maybe")
+
+
+def test_pause_is_reported_once_not_per_in_flight_call():
+    events = []
+    limits = Limits(RunSettings(), on_quota_change=lambda s, until, why: events.append((s, until)))
+    for _ in range(5):                                   # 5 calls in flight all hit the limit
+        limits.close("openai", "usage limit, try again at 9:15 PM")
+    assert len(events) == 1
