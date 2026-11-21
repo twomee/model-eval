@@ -85,6 +85,13 @@ class RunSettings:
     repetitions: int = 3
     concurrency: int = 4                # global cap on calls in flight
     subscription_concurrency: int = 2   # per subscription (CLI login): what vendors rate-limit
+    on_quota: str = "wait"              # subscription out of quota: "wait" for its reset | "fail" at once
+    quota_max_wait_h: float = 8         # give up waiting after this (longer than a 5-hour window)
+    quota_probe_min: float = 15         # re-check interval when the error says no reset time
+
+    def __post_init__(self) -> None:
+        if self.on_quota not in ("wait", "fail"):
+            raise ValueError(f"run.on_quota must be 'wait' or 'fail', not {self.on_quota!r}")
     temperature: float | None = 0.0
     max_tokens: int = 4096
     timeout_s: float = 180

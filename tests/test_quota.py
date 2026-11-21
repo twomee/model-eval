@@ -34,7 +34,7 @@ def test_ordinary_rate_limits_are_still_retried():
     assert e.retryable and not e.quota
 
 
-def test_cli_quota_error_fails_fast_instead_of_backing_off(tmp_path):
+def test_cli_quota_error_is_not_backed_off_by_the_provider(tmp_path):
     exe = tmp_path / "codexish"
     exe.write_text(f"#!/bin/sh\necho 'ERROR: {CODEX_QUOTA}' >&2\nexit 1\n", encoding="utf-8")
     exe.chmod(0o755)
@@ -56,8 +56,8 @@ class _Counting:
         return Completion("ok", 0.0)
 
 
-def test_circuit_breaker_skips_the_exhausted_subscription_only():
-    limits = Limits(RunSettings())
+def test_fail_mode_skips_the_exhausted_subscription_only():
+    limits = Limits(RunSettings(on_quota="fail"))
     gpt1, gpt2, claude = _Counting(True), _Counting(True), _Counting(False)
     w_gpt1 = limits.wrap(ModelSpec(name="sol", provider="cli", command=("codex",)), gpt1)
     w_gpt2 = limits.wrap(ModelSpec(name="luna", provider="cli", command=("codex",)), gpt2)
@@ -103,6 +103,7 @@ def test_rubric_is_deferred_not_graded_by_half_the_panel():
 
 
 def test_grade_all_writes_nothing_when_deferred_then_grades_after_reset(tmp_path, monkeypatch):
+    # (deferral is the on_quota="fail" path, or what happens after waiting gave up)
     run = tmp_path / "r"
     run.mkdir()
     (run / "generations.jsonl").write_text(json.dumps(
@@ -125,3 +126,103 @@ def test_old_half_panel_grades_are_regraded_and_not_reported():
     fine = {"key": "k2", "score": 0.8, "parts": [{"grader": "rubric", "details": {"judges": {
         "judge-claude": {"c": {"score": 8, "reason": "r"}}, "judge-gpt": "ValueError('no JSON in judge output')"}}}]}
     assert incomplete_grade(old) and not incomplete_grade(fine)   # only quota cuts are regraded
+
+
+# ---------------------------------------------------------------- wait for the reset (default)
+
+class _Window:
+    """A subscription that is out of quota for its first `blocked` calls, then resets."""
+
+    def __init__(self, blocked: int, message: str = "5-hour limit reached"):
+        self.blocked, self.message, self.calls, self.ok = blocked, message, 0, 0
+
+    async def complete(self, req):
+        self.calls += 1
+        if self.calls <= self.blocked:
+            raise ProviderError(self.message)
+        self.ok += 1
+        return Completion("ok", 0.0)
+
+
+FAST = RunSettings(quota_probe_min=0.002)   # re-check after 0.12 s instead of 15 min
+
+
+def test_calls_wait_for_the_reset_then_all_succeed():
+    events = []
+    limits = Limits(FAST, on_quota_change=lambda sub, until, why: events.append((sub, until is not None)))
+    window = _Window(blocked=2)
+    w = limits.wrap(ModelSpec(name="opus", provider="cli", command=("claude",)), window)
+
+    async def go():
+        return await asyncio.gather(*(w.complete(Request(prompt=str(i))) for i in range(6)))
+    out = asyncio.run(go())
+    assert [c.text for c in out] == ["ok"] * 6          # every call answered, none failed
+    assert window.ok == 6 and window.calls == 8           # 2 blocked probes, no flood of failing calls
+    assert events[0] == ("claude", True) and events[-1] == ("claude", False)   # paused -> resumed
+
+
+def test_other_subscriptions_keep_running_while_one_waits():
+    limits = Limits(RunSettings(quota_probe_min=0.02))    # claude waits ~1.2 s
+    claude, gpt = _Window(blocked=1), _Window(blocked=0)
+    w_claude = limits.wrap(ModelSpec(name="opus", provider="cli", command=("claude",)), claude)
+    w_gpt = limits.wrap(ModelSpec(name="sol", provider="cli", command=("codex",)), gpt)
+    finished = []
+
+    async def call(w, tag):
+        await w.complete(Request(prompt="p"))
+        finished.append(tag)
+
+    async def go():
+        await asyncio.gather(call(w_claude, "claude"), *(call(w_gpt, "gpt") for _ in range(3)))
+    asyncio.run(go())
+    assert finished[:3] == ["gpt"] * 3 and finished[-1] == "claude"   # gpt didn't wait for claude
+
+
+def test_waiting_holds_no_concurrency_slot():
+    limits = Limits(RunSettings(concurrency=1, quota_probe_min=0.02))
+    blocked, free = _Window(blocked=1), _Window(blocked=0)
+    w_b = limits.wrap(ModelSpec(name="opus", provider="cli", command=("claude",)), blocked)
+    w_f = limits.wrap(ModelSpec(name="sol", provider="cli", command=("codex",)), free)
+
+    async def go():
+        t = asyncio.create_task(w_b.complete(Request(prompt="p")))
+        await asyncio.sleep(0.05)                       # claude is now paused, waiting for its reset
+        await asyncio.wait_for(w_f.complete(Request(prompt="p")), timeout=0.5)  # the ONE global slot is free
+        await t
+    asyncio.run(go())
+
+
+def test_reset_time_from_the_message_is_used(monkeypatch):
+    now = [1_000_000.0]
+    seen = []
+    limits = Limits(RunSettings(), on_quota_change=lambda s, until, why: seen.append(until), clock=lambda: now[0])
+    limits.close("openai", "You've hit your usage limit ... try again in 2h 30m")
+    assert seen[0] == pytest.approx(now[0] + 2.5 * 3600 + 60)     # +60 s safety margin
+
+
+def test_gives_up_after_quota_max_wait():
+    limits = Limits(RunSettings(quota_probe_min=0.002, quota_max_wait_h=0.00005))   # ~0.18 s budget
+    window = _Window(blocked=10_000)
+    w = limits.wrap(ModelSpec(name="opus", provider="cli", command=("claude",)), window)
+    with pytest.raises(ProviderError) as ei:
+        asyncio.run(asyncio.wait_for(w.complete(Request(prompt="p")), timeout=5))
+    assert ei.value.quota and window.calls < 50    # stopped, didn't hammer the vendor
+
+
+def test_cancel_while_waiting_or_probing_leaves_no_stuck_lock():
+    limits = Limits(RunSettings(quota_probe_min=10))   # would wait 10 minutes
+    w = limits.wrap(ModelSpec(name="opus", provider="cli", command=("claude",)), _Window(blocked=1))
+
+    async def go():
+        t = asyncio.create_task(w.complete(Request(prompt="p")))
+        await asyncio.sleep(0.05)
+        t.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await t
+        assert not limits.gate("claude").probe.locked()
+    asyncio.run(go())
+
+
+def test_bad_on_quota_value_is_rejected():
+    with pytest.raises(ValueError, match="on_quota"):
+        RunSettings(on_quota="maybe")

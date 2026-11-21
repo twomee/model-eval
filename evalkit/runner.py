@@ -29,6 +29,14 @@ class Progress:
 
     def note(self, message: str) -> None: ...
 
+    def quota(self, subscription: str, paused_until: float | None, reason: str) -> None:
+        """A subscription ran out of quota (paused_until = when it's re-checked) or resumed (None, "")."""
+
+
+def _clock(ts: float) -> str:
+    import datetime as dt
+    return dt.datetime.fromtimestamp(ts).strftime("%H:%M")
+
 
 class ConsoleProgress(Progress):
     def __init__(self) -> None:
@@ -48,6 +56,16 @@ class ConsoleProgress(Progress):
 
     def note(self, message: str) -> None:
         print(f"  {message}")
+
+    def quota(self, subscription: str, paused_until: float | None, reason: str) -> None:
+        if paused_until:
+            print(f"  ⏸ {subscription} is out of quota: its calls wait until ~{_clock(paused_until)}; "
+                  f"other subscriptions continue. ({reason[:120]})")
+        elif reason:
+            print(f"  ✗ {subscription} is out of quota and the run stopped waiting: its remaining calls fail. "
+                  f"Run again after it resets to fill them in.")
+        else:
+            print(f"  ▶ {subscription} has quota again: resuming its calls")
 
 
 def _key(model: str, task: Task, rep: int) -> str:

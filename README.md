@@ -50,7 +50,11 @@ selection, with tokens estimated from earlier runs. Pick models × efforts with 
 model, or "All efforts, all models"), categories and repetitions; it gives you the `run` command.
 - **Judging is usually the biggest cost.** Every rubric-graded answer goes to every judge and is charged
   to the *judge's* subscription. A cheap first pass: `--repetitions 1`, or comment out one judge.
-- **Running out is safe:** runs resume where they stopped. Wait for the window to reset and run again.
+- **Running out waits, by itself.** When a subscription hits its usage window (e.g. 5 hours), its calls
+  pause until the reset - the time is read from the error ("try again at 9:15 PM"), else re-checked
+  every 15 min - and continue automatically; other subscriptions keep running meanwhile. One probe call
+  tests the reset, not all of them. Answers are never graded by half the judge panel. After
+  `quota_max_wait_h` (8 h) it stops waiting; runs resume, so running again fills in the rest.
 
 ### Web UI (local, any OS)
 ```bash

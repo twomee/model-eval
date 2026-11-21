@@ -161,8 +161,15 @@ export interface StageProgress {
   already_done: number
 }
 
+export interface PausedSubscription {
+  subscription: string
+  until: number
+  reason: string
+}
+
 export interface Job {
   run_name: string
+  paused: PausedSubscription[]
   status: JobStatus
   models: string[]
   n_tasks: number

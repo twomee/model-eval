@@ -149,3 +149,35 @@ def test_cancel_also_requires_json(tmp_path, monkeypatch):
         client.post("/api/jobs", json={"models": ["m-good"], "run_name": "csrf"})
         assert client.post("/api/jobs/current/cancel").status_code == 415
         assert _wait(client)["status"] == "succeeded"
+
+
+class _QuotaOnce:
+    """Out of quota for the first 2 calls of the run, then the window resets."""
+    calls = 0
+
+    def __init__(self, spec, settings):
+        self.spec = spec
+
+    async def complete(self, req):
+        type(self).calls += 1
+        if type(self).calls <= 2:
+            raise providers.ProviderError("5-hour limit reached")
+        await asyncio.sleep(0.05)
+        return providers.Completion(req.meta.get("reference") or "x", 0.05, 10, 5)
+
+
+def test_run_pauses_for_a_quota_reset_and_finishes_by_itself(tmp_path, monkeypatch):
+    _QuotaOnce.calls = 0
+    monkeypatch.setitem(providers._REGISTRY, "quota_once", _QuotaOnce)
+    with _app(tmp_path, monkeypatch, "quota_once") as client:
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text(cfg.read_text().replace("run: {repetitions: 1, concurrency: 2}",
+                                               "run: {repetitions: 1, concurrency: 2, quota_probe_min: 0.01}"))
+        client.post("/api/jobs", json={"models": ["m-good"], "run_name": "q1"})
+        paused = _wait(client, until=lambda j: bool(j["paused"]) or j["status"] != "running")
+        assert paused["status"] == "running" and paused["paused"][0]["subscription"] == "quota_once"
+        assert "limit reached" in paused["paused"][0]["reason"]
+        done = _wait(client)
+        assert done["status"] == "succeeded" and done["paused"] == []
+        assert done["stages"]["generate"]["done"] == 6 and done["stages"]["generate"]["failed"] == 0   # nothing lost
+        assert any("quota again" in r for r in done["recent"])

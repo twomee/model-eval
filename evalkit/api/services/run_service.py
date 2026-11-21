@@ -20,7 +20,7 @@ from pathlib import Path
 
 from ...pipeline import run_eval
 from ...runner import Progress
-from ..schemas import EstimateIn, JobOut, StageOut
+from ..schemas import EstimateIn, JobOut, PausedOut, StageOut
 from .plan_service import PlanService
 
 RECENT_LINES = 40
@@ -49,11 +49,13 @@ class Job:
     stages: dict[str, _Stage] = field(default_factory=dict)
     recent: deque[str] = field(default_factory=lambda: deque(maxlen=RECENT_LINES))
     error: str | None = None
+    paused: dict[str, tuple[float, str]] = field(default_factory=dict)   # subscription -> (until, reason)
     started_at: float = field(default_factory=time.time)
     finished_at: float | None = None
 
     def out(self) -> JobOut:
-        return JobOut(run_name=self.run_name, status=self.status, models=self.models, n_tasks=self.n_tasks,
+        return JobOut(run_name=self.run_name, status=self.status,
+                      paused=[PausedOut(subscription=s, until=u, reason=r) for s, (u, r) in self.paused.items()], models=self.models, n_tasks=self.n_tasks,
                       repetitions=self.repetitions, stage=self.stage,
                       stages={k: StageOut(**v.__dict__) for k, v in self.stages.items()},
                       recent=list(self.recent), error=self.error, started_at=self.started_at,
@@ -67,11 +69,16 @@ class JobProgress(Progress):
         self.job = job
 
     def stage(self, stage: str, total: int, already_done: int) -> None:
-        # Grading runs in passes while answers are still coming in: accumulate, don't reset.
-        if stage == "grade" and (s := self.job.stages.get("grade")):
-            s.total += total
-            if total:
-                self.job.recent.append(f"grade: {total} new answers to grade")
+        # Grading runs in passes while answers are still coming in. Count ABSOLUTELY per pass
+        # (graded so far / graded + still to grade); adding each pass's to-do list re-counted the
+        # answers a pass couldn't grade (a run showed "4,097 of 4,251" for 1,872 answers).
+        if stage == "grade":
+            s = self.job.stages.get("grade")
+            if s is None:
+                s = self.job.stages["grade"] = _Stage(already_done=already_done)
+                self.job.recent.append(f"grade: {total} to grade" + (f", {already_done} already graded" if already_done else ""))
+            s.done = already_done - s.already_done
+            s.total = s.done + total
         else:
             self.job.stages[stage] = _Stage(total=total, already_done=already_done)
             if stage != "report":
@@ -83,13 +90,23 @@ class JobProgress(Progress):
 
     def item(self, stage: str, model: str, task_id: str, rep: int, detail: str, failed: bool) -> None:
         s = self.job.stages.setdefault(stage, _Stage())
-        s.done += 1
+        if not detail.startswith("deferred"):   # deferred = not graded yet: not "done"
+            s.done += 1
         s.failed += int(failed)
         line = f"{model} · {task_id} · rep{rep} · {detail}" if model else detail
         self.job.recent.append(("✗ " if failed else "") + line)
 
     def note(self, message: str) -> None:
         self.job.recent.append(message)
+
+    def quota(self, subscription: str, paused_until: float | None, reason: str) -> None:
+        if paused_until:
+            self.job.paused[subscription] = (paused_until, reason)
+            self.job.recent.append(f"⏸ {subscription} out of quota: waiting for its reset (other subscriptions continue)")
+        else:
+            self.job.paused.pop(subscription, None)
+            self.job.recent.append(f"▶ {subscription} has quota again: resuming" if not reason
+                                   else f"✗ {subscription}: stopped waiting for its quota reset")
 
 
 @dataclass
