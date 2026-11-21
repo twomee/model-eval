@@ -56,3 +56,34 @@ def test_degenerate_inputs():
 def test_deterministic():
     means = {"A": {t: 0.6 for t in CAT}, "B": {t: (i % 3) / 3 for i, t in enumerate(CAT)}}
     assert compare(means, CAT, {}).for_you.p_beats == compare(means, CAT, {}).for_you.p_beats
+
+
+# ---------------------------------------------------------------- scorecard
+
+from evalkit.compare import USABLE, attempt_counts, scorecard  # noqa: E402
+
+
+def test_reliability_counts_errors_and_weak_answers_as_unusable():
+    grades = [{"model": "A", "score": s} for s in (1.0, 0.9, 0.79, 0.0)] + \
+             [{"model": "A", "score": None}] + [{"model": "B", "score": 1.0}]   # None: grader couldn't run
+    usable, attempts, errors = attempt_counts("A", grades, errors=2)
+    assert (usable, attempts, errors) == (2, 6, 2)       # 4 scored + 2 errors; None isn't an attempt
+    assert USABLE == 0.8                                 # 0.79 is not usable, 0.9 is
+
+
+def test_scorecard_has_every_model_with_absolute_numbers():
+    means = {
+        "A": {**{f"code{i}": 0.9 for i in range(10)}, **{f"he{i}": 0.3 for i in range(10)}},
+        "B": {**{f"code{i}": 0.5 for i in range(10)}, **{f"he{i}": 0.9 for i in range(10)}},
+        "C": {t: 0.2 for t in CAT},
+    }
+    c = compare(means, CAT, {"backend_code": 3, "hebrew_text": 1})
+    rows = scorecard(c, {"A": (18, 20, 0), "B": (10, 20, 5), "C": (0, 0, 0)},
+                     {"A": {"backend_code": 0.9, "hebrew_text": 0.3}})
+    assert [r.name for r in rows] == ["A", "B", "C"]                 # sorted by fit for you
+    a, b, cc = rows
+    assert a.fit == pytest.approx(0.75) and a.general == pytest.approx(0.6)
+    assert b.general == pytest.approx(0.7) and b.general > a.general  # B is better in general
+    assert a.reliability == pytest.approx(0.9) and b.reliability == pytest.approx(0.5) and b.errors == 5
+    assert cc.reliability is None                                    # no attempts: unknown, not 0%
+    assert a.categories["backend_code"] == 0.9 and a.leader_fit and not cc.leader_fit

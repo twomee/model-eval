@@ -125,9 +125,27 @@ export interface FlaggedTask {
 
 export interface ComparisonResponse {
   run: string
+  usable_threshold: number
+  categories: string[]
+  scorecard: ScoreRow[]
   for_you: Ranking
   general: Ranking
   notes: string[]
   flagged_tasks: FlaggedTask[]
   report_url: string | null
+}
+
+export interface ScoreRow {
+  name: string
+  fit: number
+  fit_margin: number
+  general: number
+  general_margin: number
+  reliability: number | null
+  usable: number
+  attempts: number
+  errors: number
+  categories: Record<string, number | null>
+  leader_fit: boolean
+  leader_general: boolean
 }

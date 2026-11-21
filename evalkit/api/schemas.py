@@ -146,8 +146,26 @@ class FlaggedTaskOut(BaseModel):
     max: float
 
 
+class ScoreRowOut(BaseModel):
+    name: str
+    fit: float = Field(description="fit for you: weighted by category_weights, 0..1")
+    fit_margin: float = Field(description="half-width of the 90% interval")
+    general: float = Field(description="every category weighted equally, 0..1")
+    general_margin: float
+    reliability: float | None = Field(description="share of all attempts with a usable answer; None = no attempts")
+    usable: int
+    attempts: int
+    errors: int
+    categories: dict[str, float | None]
+    leader_fit: bool
+    leader_general: bool
+
+
 class ComparisonOut(BaseModel):
     run: str
+    usable_threshold: float
+    categories: list[str]
+    scorecard: list[ScoreRowOut]
     for_you: RankingOut
     general: RankingOut
     notes: list[str]

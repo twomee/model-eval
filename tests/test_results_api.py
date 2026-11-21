@@ -56,12 +56,18 @@ def test_comparison_ranks_and_explains(client):
         assert r["head_to_head"][0][-1] > 0.9                                # good beats broken
     assert body["for_you"]["weights"]["backend_code"] == 2 and body["general"]["weights"] == {}
     assert body["report_url"] == "/reports/mockrun/report.html"
+    card = {r["name"]: r for r in body["scorecard"]}
+    assert set(card) == {"mock-good", "mock-sloppy", "mock-broken"}            # every model, not just #1 vs #2
+    assert card["mock-good"]["fit"] > card["mock-sloppy"]["fit"] > card["mock-broken"]["fit"]
+    assert card["mock-good"]["reliability"] > card["mock-broken"]["reliability"]
+    assert card["mock-broken"]["reliability"] == 0 and card["mock-broken"]["attempts"] > 0
+    assert body["usable_threshold"] == 0.8 and "backend_code" in body["categories"]
     assert any("Fewer than 10 tasks" in n for n in body["notes"])
 
 
 def test_report_is_served_with_the_comparison(client):
     r = client.get("/reports/mockrun/report.html")
-    assert r.status_code == 200 and "Which model is best?" in r.text and "Head-to-head" in r.text
+    assert r.status_code == 200 and "All models" in r.text and "Reliability" in r.text and "Head-to-head" in r.text
 
 
 @pytest.mark.parametrize("run", ["nope", "not-a-run", "..", "%2e%2e", "..%2fsecret.txt", "mockrun%2f..%2f.."])
@@ -70,5 +76,5 @@ def test_unknown_or_escaping_runs_never_leak(client, run):
     r = client.get(f"/reports/{run}/report.html")
     # Names with "/" or ".." never reach the report route: they fall through to the SPA shell
     # (200, index.html), like any unknown page. What matters: no secret, no report.
-    assert "TOKEN" not in r.text and "Which model is best?" not in r.text
+    assert "TOKEN" not in r.text and "Fit for you" not in r.text
     assert r.status_code == 404 or r.headers["content-type"].startswith("text/html")

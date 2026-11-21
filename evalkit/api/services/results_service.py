@@ -9,10 +9,11 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from ...compare import Ranking
+from ...compare import USABLE, Ranking
 from ...config import load_config, load_tasks
 from ...report import build_summary
-from ..schemas import (RUN_NAME_PATTERN, ComparisonOut, FlaggedTaskOut, RankedOut, RankingOut, RunOut)
+from ..schemas import (RUN_NAME_PATTERN, ComparisonOut, FlaggedTaskOut, RankedOut, RankingOut, RunOut,
+                       ScoreRowOut)
 
 HEAD_TO_HEAD_TOP = 10
 
@@ -54,7 +55,14 @@ class ResultsService:
         summary = build_summary(load_config(self.config_path), d, load_tasks(self.tasks_dir))
         c = summary["comparison"]
         return ComparisonOut(
-            run=run, for_you=_ranking_out(c.for_you), general=_ranking_out(c.general), notes=c.notes,
+            run=run, usable_threshold=USABLE, categories=summary["categories"],
+            scorecard=[ScoreRowOut(
+                name=r.name, fit=r.fit, fit_margin=(r.fit_ci[1] - r.fit_ci[0]) / 2,
+                general=r.general, general_margin=(r.general_ci[1] - r.general_ci[0]) / 2,
+                reliability=r.reliability, usable=r.usable, attempts=r.attempts, errors=r.errors,
+                categories=r.categories, leader_fit=r.leader_fit, leader_general=r.leader_general)
+                for r in summary["scorecard"]],
+            for_you=_ranking_out(c.for_you), general=_ranking_out(c.general), notes=c.notes,
             flagged_tasks=[FlaggedTaskOut(task=s["task"], verdict=s["verdict"], min=s["min"], max=s["max"])
                            for s in summary["task_signal"] if s["verdict"] != "separates"],
             report_url=f"/reports/{run}/report.html" if (d / "report.html").is_file() else None)

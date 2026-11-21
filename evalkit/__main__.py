@@ -145,24 +145,28 @@ def main(argv: list[str] | None = None) -> int:
     if flagged:
         print(f"  ! {len(flagged)} task(s) don't separate the models: "
               + ", ".join(f"{s['task']} ({s['verdict']})" for s in flagged))
-    print(format_comparison(summary["comparison"]))
+    print(format_scorecard(summary["comparison"], summary["scorecard"]))
     return 0
 
 
-def format_comparison(c, top: int = 8) -> str:
-    """Both rankings side by side in the terminal: best for you, best in general."""
-    lines = [f"  note: {n}" for n in c.notes]
-    for r in (c.for_you, c.general):
-        title = "BEST FOR YOU (your category_weights)" if r is c.for_you else "BEST IN GENERAL (categories equal)"
-        lines += ["", title, f"  {r.verdict}"]
-        for i, m in enumerate(r.models[:top], 1):
-            mark = "*" if m.name in r.leaders else " "
-            lines.append(f" {mark}{i:>2}. {m.name:<26} {m.score:.3f}  (90% CI {m.ci90[0]:.2f}–{m.ci90[1]:.2f})")
-        if len(r.models) > top:
-            lines.append(f"     … {len(r.models) - top} more in the report")
-    lines.append("  * = in the leading group (not clearly beaten by #1)")
-    return "\n".join(lines)
+def format_scorecard(c, rows) -> str:
+    """Every model with absolute percentages: fit for you, general quality, reliability."""
+    def pct(x, ci=None):
+        if x is None:
+            return "   –   "
+        return f"{100 * x:>3.0f}%" + (f" ±{50 * (ci[1] - ci[0]):<2.0f}" if ci else "")
 
+    lines = [f"  note: {n}" for n in c.notes]
+    lines += ["", f"  Best for you:   {c.for_you.verdict}", f"  Best in general: {c.general.verdict}", "",
+              f"  {'#':>2}  {'model':<26} {'fit for you':<12} {'general':<12} {'reliability'}"]
+    for i, r in enumerate(rows, 1):
+        mark = "*" if r.leader_fit else " "
+        rel = f"{pct(r.reliability)} ({r.usable}/{r.attempts}" + (f", {r.errors} err)" if r.errors else ")") \
+            if r.reliability is not None else "   –"
+        lines.append(f" {mark}{i:>2}  {r.name:<26} {pct(r.fit, r.fit_ci):<12} {pct(r.general, r.general_ci):<12} {rel}")
+    lines += ["  fit = your category weights · general = categories equal · ± = 90% margin",
+              "  reliability = attempts (errors included) with a usable answer (score >= 80%) · * = top group for you"]
+    return "\n".join(lines)
 
 def _serve(args: argparse.Namespace) -> int:
     try:

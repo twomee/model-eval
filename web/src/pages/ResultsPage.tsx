@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react'
 import { HeadToHead } from '../components/HeadToHead'
-import { RankingCard } from '../components/RankingCard'
+import { Scorecard } from '../components/Scorecard'
 import { useResource } from '../hooks/useResource'
 import type { Api } from '../services/api'
 import type { RunInfo } from '../types/api'
@@ -33,8 +33,6 @@ function ResultsView({ client, runs, onReload }: { client: Api; runs: RunInfo[];
   const comparison = useResource(load)
   const data = comparison.data?.run === run ? comparison.data : null // never show another run's numbers
 
-  const weights = data ? Object.entries(data.for_you.weights).map(([k, v]) => `${k} ×${v}`).join(', ') : ''
-
   return (
     <>
       <div className="toolbar">
@@ -55,12 +53,20 @@ function ResultsView({ client, runs, onReload }: { client: Api; runs: RunInfo[];
       {data && (
         <>
           {data.notes.map((n) => <div key={n} className="alert alert-warn">{n}</div>)}
-          <div className="rankings">
-            <RankingCard title="Best for you" subtitle={`Weighted by your category_weights: ${weights || 'none set'}`}
-              ranking={data.for_you} />
-            <RankingCard title="Best in general" subtitle="Every category weighted equally" ranking={data.general} />
+          <div className="verdicts" role="status">
+            <p className={`verdict${data.scorecard.filter((r) => r.leader_fit).length > 1 ? ' verdict-tie' : ''}`}>
+              <strong>Best for you:</strong> {data.for_you.verdict}
+            </p>
+            <p className={`verdict${data.scorecard.filter((r) => r.leader_general).length > 1 ? ' verdict-tie' : ''}`}>
+              <strong>Best in general:</strong> {data.general.verdict}
+            </p>
           </div>
-          <HeadToHead ranking={data.for_you} />
+          <Scorecard rows={data.scorecard} categories={data.categories} weights={data.for_you.weights}
+            usableThreshold={data.usable_threshold} />
+          <details className="h2h-details">
+            <summary>Head-to-head: how often each model beats each other one</summary>
+            <HeadToHead ranking={data.for_you} />
+          </details>
           {data.flagged_tasks.length > 0 && (
             <section aria-label="Task signal">
               <h2>Tasks that don't separate the models</h2>

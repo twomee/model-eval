@@ -138,3 +138,49 @@ def compare(means: dict[str, dict[str, float]], task_cat: dict[str, str], weight
         for_you=_ranking("for you", means, task_cat, weights, rounds, seed),
         general=_ranking("in general", means, task_cat, {}, rounds, seed + 1),
         notes=notes)
+
+
+# --------------------------------------------------------------------------- scorecard (every model, absolute %)
+
+USABLE = 0.8  # an answer scoring >= 80% counts as "usable": you could act on it without redoing the work
+
+
+@dataclass
+class ScoreRow:
+    """One model, absolute numbers (not relative to the others)."""
+    name: str
+    fit: float                       # fit for you: weighted by your category_weights, 0..1
+    fit_ci: tuple[float, float]
+    general: float                   # general quality: every category equal, 0..1
+    general_ci: tuple[float, float]
+    reliability: float | None        # share of ALL attempts (errors included) with a usable answer
+    usable: int
+    attempts: int
+    errors: int                      # calls that produced no answer (timeouts, CLI errors, limits)
+    categories: dict[str, float | None]
+    leader_fit: bool
+    leader_general: bool
+
+
+def scorecard(c: Comparison, attempts: dict[str, tuple[int, int, int]],
+              categories: dict[str, dict[str, float | None]]) -> list[ScoreRow]:
+    """attempts: model -> (usable, attempts, errors). Rows sorted by fit for you."""
+    general = {m.name: m for m in c.general.models}
+    rows = []
+    for m in c.for_you.models:
+        usable, total, errors = attempts.get(m.name, (0, 0, 0))
+        g = general[m.name]
+        rows.append(ScoreRow(
+            name=m.name, fit=m.score, fit_ci=m.ci90, general=g.score, general_ci=g.ci90,
+            reliability=usable / total if total else None, usable=usable, attempts=total, errors=errors,
+            categories=categories.get(m.name, {}),
+            leader_fit=m.name in c.for_you.leaders, leader_general=m.name in c.general.leaders))
+    return rows
+
+
+def attempt_counts(model: str, grades: list[dict], errors: int) -> tuple[int, int, int]:
+    """(usable, attempts, errors) for one model. A grade with score None (e.g. Go not installed)
+    isn't an attempt the model could fail; an error IS one (you asked and got nothing usable)."""
+    scored = [g["score"] for g in grades if g["model"] == model and g["score"] is not None]
+    usable = sum(1 for s in scored if s >= USABLE)
+    return usable, len(scored) + errors, errors
