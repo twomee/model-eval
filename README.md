@@ -19,10 +19,8 @@ open results/mock/report.html
 # 2. Check config + tasks without calling any model
 python -m evalkit validate
 
-# 3. Verify each CLI works on its own before running them all
-echo "say hi" | claude -p --output-format json
-codex exec --skip-git-repo-check "say hi"
-gemini -p "say hi"
+# 3. Preflight: one trivial call per model AND judge, retries off, real error on failure
+python -m evalkit doctor
 
 # 4. Small run first, then everything
 python -m evalkit run --run smoke --tasks gen_capacity_estimate
@@ -44,6 +42,7 @@ Tip: open a fresh conversation per prompt so earlier context doesn't leak into t
 | `run --category backend_code` | only one category |
 | `grade --run v1 --regrade` | re-grade without regenerating answers (after changing a rubric) |
 | `report --run v1` | rebuild the report |
+| `doctor --models claude-opus` | preflight a subset; exit code 1 if anything fails |
 
 ## Architecture
 
@@ -52,6 +51,7 @@ config.yaml          who competes, how they're called, and how much each categor
 tasks/*.yaml         what we test: prompt, reference, graders (twins_he.yaml = Hebrew twins of English tasks)
 tests/               harness unit tests + golden test over all tasks
 evalkit/
+  doctor.py          preflight: one ping per model/judge, flags single-vendor judge panels
   providers.py       one adapter per vendor behind a single interface: complete(Request) -> Completion
                      anthropic | openai_compat | cli | manual | mock
   graders.py         python_tests, go_tests (execute tests) | match (regex) | length, language (constraints) | rubric (LLM-as-judge)
@@ -78,7 +78,7 @@ evalkit/
 - **Always read the answers yourself.** The score is a filter, not the truth.
 
 ## Limitations to be aware of
-1. **A CLI is not a clean model.** Claude Code, Codex and Gemini CLI add their own system prompts and may choose the model themselves; Claude Code also loads your `~/.claude/CLAUDE.md`. You are measuring "the tool as you use it" — legitimate, but know it. Check each CLI's `--help` for flags to pick a model and skip user settings.
+1. **A CLI is not a clean model.** Claude Code, Codex and Gemini CLI add their own system prompts. By default they also load *your* setup — Claude Code reads `~/.claude/CLAUDE.md` (a mentoring-style CLAUDE.md visibly changes answers, e.g. appending "something to think about…" questions), and Codex always loads `~/.codex/AGENTS.md` plus `config.toml` (model, sandbox) — no flag skips AGENTS.md. `config.yaml` strips this: `--safe-mode --tools ""` for Claude; for Codex an `isolated_home` (a clean `CODEX_HOME` containing only a symlink to your login) plus `-s read-only` and pins model ids so a CLI update doesn't silently swap the model. A residual vendor system prompt remains; that is "the tool as you use it".
 2. **Self-preference bias.** A judge tends to prefer answers from its own model family, hence a two-vendor judge panel. `validate` warns when the same model both competes and judges.
 3. **Model-written code runs on your machine** — inside a subprocess with a timeout. That protects against accidents, not malice. For unfamiliar models, run inside Docker.
 4. **Subscription rate limits.** Default concurrency is 1 per CLI. If you hit a limit, wait and re-run; resume continues where it stopped.

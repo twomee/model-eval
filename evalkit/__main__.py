@@ -5,6 +5,7 @@
   python -m evalkit report   --config config.yaml --run NAME
   python -m evalkit export   --config config.yaml          # prompts for `manual` models
   python -m evalkit validate --config config.yaml          # check config + tasks, no model calls
+  python -m evalkit doctor   --config config.yaml          # one trivial call per model/judge: is it reachable?
 """
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ import sys
 from pathlib import Path
 
 from .config import load_config, load_tasks
+from .doctor import format_report, run_doctor
 from .report import build_summary, write_csv, write_html
 from .runner import export_manual, generate, grade_all
 
@@ -25,7 +27,7 @@ def _csv(s: str | None) -> set[str] | None:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="evalkit")
-    ap.add_argument("command", choices=["run", "grade", "report", "export", "validate"])
+    ap.add_argument("command", choices=["run", "grade", "report", "export", "validate", "doctor"])
     ap.add_argument("--config", default="config.yaml", type=Path)
     ap.add_argument("--tasks-dir", default="tasks", type=Path)
     ap.add_argument("--run", default="default", help="run name; results go to results/<run>/")
@@ -70,6 +72,11 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"NOTE: judge {j.name} is the same model as competitor {competitors[ident(j)]} "
                       f"-> self-preference bias. Mitigation: a multi-vendor judge panel.")
         return 0
+    if args.command == "doctor":
+        checks = asyncio.run(run_doctor(cfg, models, [t.id for t in tasks]))
+        text, all_ok = format_report(cfg, checks)
+        print(text)
+        return 0 if all_ok else 1
     if args.command == "export":
         paths = export_manual(cfg, tasks)
         print(f"wrote {len(paths)} prompt files under manual/ — paste each reply into the matching .answer.md")

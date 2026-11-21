@@ -27,7 +27,20 @@ class ModelSpec:
     price_out: float | None = None  # USD per 1M output tokens
     params: dict[str, Any] = field(default_factory=dict)  # merged into request body
     concurrency: int | None = None  # per-model cap (subscriptions rate-limit hard)
-    parse: str = "text"             # cli output: "text" | "claude_json"
+    parse: str = "text"             # cli output: "text" | "claude_json" | "codex_jsonl"
+    # cli: run with a clean home dir {env, dir, link: [files to symlink in]} - see CliProvider
+    isolated_home: dict[str, Any] | None = None
+
+    @property
+    def model_id(self) -> str | None:
+        """The model that actually runs: `model` for APIs, the --model/-m value for CLIs.
+        None = the CLI picks (unpinned: results can change when the CLI updates)."""
+        if self.model:
+            return self.model
+        for flag in ("--model", "-m"):
+            if flag in self.command[:-1]:
+                return self.command[self.command.index(flag) + 1]
+        return None
 
     def cost(self, tokens_in: int, tokens_out: int) -> float | None:
         if self.price_in is None or self.price_out is None:
@@ -88,6 +101,7 @@ def _model_from_dict(d: dict[str, Any]) -> ModelSpec:
         params=d.get("params") or {},
         concurrency=d.get("concurrency"),
         parse=d.get("parse", "text"),
+        isolated_home=d.get("isolated_home"),
     )
 
 

@@ -42,6 +42,9 @@ class Completion:
     latency_s: float
     input_tokens: int | None = None
     output_tokens: int | None = None
+    # Cost reported by the provider itself (e.g. Claude Code's API-list-price estimate).
+    # When None, the runner falls back to the price table in config.
+    cost_usd: float | None = None
 
 
 class ProviderError(Exception):
@@ -148,6 +151,10 @@ class CliProvider:
     `command` is argv (no shell -> no injection). If an arg contains "{prompt}" it is
     substituted; otherwise the prompt goes to stdin. Runs in an empty temp dir so an
     agentic CLI can't touch your files.
+
+    `isolated_home` points the CLI's home dir (e.g. CODEX_HOME) at a clean directory that
+    contains only symlinks to the files it needs to log in. Some CLIs always load global
+    instructions from their home (codex: ~/.codex/AGENTS.md) and offer no flag to skip it.
     """
 
     def __init__(self, spec: ModelSpec, settings: RunSettings):
@@ -156,6 +163,7 @@ class CliProvider:
         if shutil.which(spec.command[0]) is None:  # fail fast: once per model, not once per call
             raise ProviderError(f"[{spec.name}] CLI not found on PATH: {spec.command[0]}")
         self.spec, self.settings = spec, settings
+        self.env = {**os.environ, **_prepare_isolated_home(spec)}
 
     async def complete(self, req: Request) -> Completion:
         full = f"{req.system}\n\n---\n\n{req.prompt}" if req.system else req.prompt
@@ -167,7 +175,7 @@ class CliProvider:
                 t0 = time.perf_counter()
                 try:
                     proc = await asyncio.create_subprocess_exec(
-                        *argv, cwd=cwd,
+                        *argv, cwd=cwd, env=self.env,
                         stdin=asyncio.subprocess.DEVNULL if uses_placeholder else asyncio.subprocess.PIPE,
                         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
                 except FileNotFoundError as e:
@@ -181,26 +189,117 @@ class CliProvider:
                     last_err = ProviderError("cli timeout", retryable=True)
                 else:
                     latency = time.perf_counter() - t0
+                    stdout = out.decode(errors="replace")
                     if proc.returncode == 0:
-                        return self._parse(out.decode(errors="replace"), latency)
-                    msg = err.decode(errors="replace").strip()[-500:]
-                    # Subscription CLIs usually signal limits in stderr text, not a status code.
-                    retryable = bool(re.search(r"rate.?limit|429|overloaded|try again", msg, re.I))
-                    last_err = ProviderError(f"exit {proc.returncode}: {msg}", retryable)
+                        return self._parse(stdout, latency)
+                    last_err = self._failure(proc.returncode, stdout, err.decode(errors="replace"))
             if not last_err.retryable:
                 break
             await asyncio.sleep(min(120, 5 * 2 ** attempt))
         raise last_err  # type: ignore[misc]
 
     def _parse(self, stdout: str, latency: float) -> Completion:
-        if self.spec.parse == "claude_json":
-            data = json.loads(stdout)
-            if data.get("is_error"):
-                raise ProviderError(f"claude error: {data.get('result')}", retryable=True)
-            usage = data.get("usage") or {}
-            return Completion(data.get("result", ""), latency,
-                              usage.get("input_tokens"), usage.get("output_tokens"))
-        return Completion(stdout.strip(), latency)
+        parser = _PARSERS.get(self.spec.parse)
+        if parser is None:
+            return Completion(stdout.strip(), latency)
+        return parser(stdout, latency)
+
+    def _failure(self, code: int, stdout: str, stderr: str) -> ProviderError:
+        # Structured-output CLIs (claude json, codex --json) exit 1 with the real error on
+        # STDOUT and an empty stderr. Let the parser find it; fall back to stderr.
+        if self.spec.parse in _PARSERS:
+            try:
+                self._parse(stdout, 0.0)
+            except ProviderError as e:
+                return ProviderError(f"exit {code}: {e}", e.retryable)
+        msg = _error_summary(stderr) or _error_summary(stdout)
+        return ProviderError(f"exit {code}: {msg}", _is_retryable(msg))
+
+
+def _prepare_isolated_home(spec: ModelSpec) -> dict[str, str]:
+    iso = spec.isolated_home
+    if not iso:
+        return {}
+    home = Path(iso["dir"]).expanduser()
+    home.mkdir(parents=True, exist_ok=True)
+    for src in map(lambda x: Path(x).expanduser(), iso.get("link", [])):
+        if not src.exists():
+            raise ProviderError(f"[{spec.name}] isolated_home: {src} missing (logged in to the CLI?)")
+        dst = home / src.name
+        # Symlink, not copy: the CLI refreshes tokens in place; a copy would go stale.
+        if not (dst.is_symlink() and dst.resolve() == src.resolve()):
+            dst.unlink(missing_ok=True)
+            dst.symlink_to(src)
+    return {iso["env"]: str(home)}
+
+
+_RETRYABLE = re.compile(r"rate.?limit|429|overloaded|try again|temporarily unavailable", re.I)
+
+
+def _is_retryable(msg: str) -> bool:
+    """Subscription CLIs signal limits in text, not status codes. Anything else (bad model id,
+    no credits, auth) is permanent: retrying it just burns minutes of backoff."""
+    return bool(_RETRYABLE.search(msg))
+
+
+def _error_summary(stderr: str, limit: int = 500) -> str:
+    """CLIs log a lot to stderr (codex dumps whole JSON payloads). The useful part is the
+    LAST line that looks like an error; fall back to the tail when nothing does."""
+    lines = [ln.strip() for ln in stderr.splitlines() if ln.strip()]
+    errors = [ln for ln in lines if re.match(r"(error|fatal)\b", ln, re.I) or ln.startswith("ERROR:")]
+    return (errors[-1] if errors else "\n".join(lines))[-limit:]
+
+
+def parse_claude_json(stdout: str, latency: float) -> Completion:
+    """`claude -p --output-format json` -> Completion.
+
+    Token accounting: `usage.input_tokens` only counts UNCACHED tokens (often single digits);
+    the real prompt size is input + cache_creation + cache_read. Reporting only the first
+    would make Claude look ~1000x cheaper on input than an API provider.
+    """
+    try:
+        data = json.loads(stdout)
+    except json.JSONDecodeError as e:
+        raise ProviderError(f"claude: non-JSON output: {stdout[:300]!r}") from e
+    if data.get("is_error"):
+        msg = str(data.get("result"))
+        raise ProviderError(f"claude error: {msg}", retryable=_is_retryable(msg))
+    usage = data.get("usage") or {}
+    parts = [usage.get(k) for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")]
+    tokens_in = sum(p for p in parts if p) if any(p is not None for p in parts) else None
+    return Completion(data.get("result", ""), latency, tokens_in, usage.get("output_tokens"),
+                      cost_usd=data.get("total_cost_usd"))
+
+
+def parse_codex_jsonl(stdout: str, latency: float) -> Completion:
+    """`codex exec --json` -> Completion. One JSON event per line; the answer is the last
+    `agent_message`, usage arrives in `turn.completed`, failures as `error` / `turn.failed`.
+    OpenAI's input_tokens already INCLUDES cached tokens (unlike Anthropic's)."""
+    text, usage, errors = None, {}, []
+    for line in stdout.splitlines():
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue  # codex may interleave non-JSON log lines
+        kind = ev.get("type")
+        item = ev.get("item") or {}
+        if kind == "item.completed" and item.get("type") == "agent_message":
+            text = item.get("text", "")
+        elif kind == "turn.completed":
+            usage = ev.get("usage") or {}
+        elif kind == "turn.failed":
+            errors.append((ev.get("error") or {}).get("message", "turn failed"))
+        elif kind == "error":
+            errors.append(ev.get("message", "error"))
+    if errors and text is None:
+        msg = errors[-1]
+        raise ProviderError(f"codex error: {msg}", retryable=_is_retryable(msg))
+    if text is None:
+        raise ProviderError(f"codex: no agent_message in output: {stdout[-300:]!r}")
+    return Completion(text, latency, usage.get("input_tokens"), usage.get("output_tokens"))
+
+
+_PARSERS = {"claude_json": parse_claude_json, "codex_jsonl": parse_codex_jsonl}
 
 
 # --------------------------------------------------------------------------- Manual (copy/paste)
@@ -245,6 +344,7 @@ class MockProvider:
             "good": ref,
             "sloppy": ref[: len(ref) // 2] if random.random() < 0.5 else ref,
             "broken": "I'm not sure. Here is some code:\n```python\ndef f(): pass\n```",
+            "judge": ref,  # a mock judge asked a non-judge question (e.g. `doctor` ping)
         }[self.spec.model]
         return Completion(text, random.uniform(0.5, 3), len(req.prompt) // 4, len(text) // 4)
 
