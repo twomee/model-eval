@@ -299,7 +299,31 @@ def parse_codex_jsonl(stdout: str, latency: float) -> Completion:
     return Completion(text, latency, usage.get("input_tokens"), usage.get("output_tokens"))
 
 
-_PARSERS = {"claude_json": parse_claude_json, "codex_jsonl": parse_codex_jsonl}
+def parse_agy_json(stdout: str, latency: float) -> Completion:
+    """`agy -p ... --output-format json` (Antigravity CLI, Gemini) -> Completion.
+
+    One JSON envelope. Success is `status == "SUCCESS"` (there is no is_error flag); other
+    statuses (ERROR, CANCELED, INTERRUPTED, INVALID, ...) are failures with an `error` string.
+    `usage.input_tokens` already includes cached tokens (input + output == total_tokens).
+    """
+    # agy may print diagnostics before the envelope; the envelope is the last JSON line.
+    data = None
+    for line in reversed([ln for ln in stdout.splitlines() if ln.strip()]):
+        try:
+            data = json.loads(line)
+            break
+        except json.JSONDecodeError:
+            continue
+    if not isinstance(data, dict) or "status" not in data:
+        raise ProviderError(f"agy: no JSON envelope in output: {stdout[-300:]!r}")
+    if data["status"] != "SUCCESS":
+        msg = str(data.get("error") or data["status"])
+        raise ProviderError(f"agy {data['status']}: {msg}", retryable=_is_retryable(msg))
+    usage = data.get("usage") or {}
+    return Completion(data.get("response", ""), latency, usage.get("input_tokens"), usage.get("output_tokens"))
+
+
+_PARSERS = {"claude_json": parse_claude_json, "codex_jsonl": parse_codex_jsonl, "agy_json": parse_agy_json}
 
 
 # --------------------------------------------------------------------------- Manual (copy/paste)

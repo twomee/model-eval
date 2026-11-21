@@ -37,6 +37,7 @@ class CheckOut(BaseModel):
     role: Role
     ok: bool
     detail: str
+    isolation: str | None = None
 
 
 class DoctorOut(BaseModel):
