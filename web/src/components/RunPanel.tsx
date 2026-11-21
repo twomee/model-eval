@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import type { EstimateResponse, Job, StageProgress } from '../types/api'
+import type { EstimateResponse, Family, Job, StageProgress } from '../types/api'
+import { describeSelection } from '../utils/selection'
 
 interface Props {
   estimate: EstimateResponse | null   // null = nothing valid selected
@@ -8,6 +9,8 @@ interface Props {
   error: string | null
   onStart: () => void
   onCancel: () => void
+  families: Family[]
+  onUseRunSelection: (models: string[]) => void
 }
 
 const STAGE_LABELS: Record<string, string> = { generate: 'Answers', grade: 'Grading', report: 'Report' }
@@ -28,7 +31,21 @@ function StageBar({ name, s }: { name: string; s: StageProgress }) {
   )
 }
 
-export function RunPanel({ estimate, job, starting, error, onStart, onCancel }: Props) {
+function RunSelection({ job, families, onUse }: { job: Job; families: Family[]; onUse: (m: string[]) => void }) {
+  return (
+    <details className="run-selection">
+      <summary>Models in this run ({job.models.length}): the dropdowns above show your next selection, not this run</summary>
+      <ul>
+        {describeSelection(families, job.models).map((g) => (
+          <li key={g.family}><strong>{g.family}</strong>: {g.efforts.join(', ')}</li>
+        ))}
+      </ul>
+      <button type="button" onClick={() => onUse(job.models)}>Load this selection into the dropdowns</button>
+    </details>
+  )
+}
+
+export function RunPanel({ estimate, job, starting, error, onStart, onCancel, families, onUseRunSelection }: Props) {
   const [confirming, setConfirming] = useState(false)
   const running = job?.status === 'running'
 
@@ -43,6 +60,7 @@ export function RunPanel({ estimate, job, starting, error, onStart, onCancel }: 
             {job.repetitions} reps. You can close this tab: the run continues on the server.
           </p>
           {Object.entries(job.stages).map(([name, s]) => <StageBar key={name} name={name} s={s} />)}
+          <RunSelection job={job} families={families} onUse={onUseRunSelection} />
           <button type="button" onClick={onCancel}>Cancel run</button>
           <span className="muted"> Answers so far are kept; starting the same run again resumes it.</span>
         </div>
@@ -54,6 +72,7 @@ export function RunPanel({ estimate, job, starting, error, onStart, onCancel }: 
           {job.status === 'succeeded' && <>Run “{job.run_name}” finished. <a href={job.results_url}>View results →</a></>}
           {job.status === 'cancelled' && <>Run “{job.run_name}” was cancelled. Start it again to resume where it stopped.</>}
           {job.status === 'failed' && <>Run “{job.run_name}” failed: {job.error}</>}
+          <RunSelection job={job} families={families} onUse={onUseRunSelection} />
         </div>
       )}
 

@@ -162,3 +162,22 @@ describe('Run button', () => {
     expect(await screen.findByRole('button', { name: /^Run 3 models/ })).toBeInTheDocument()
   })
 })
+
+describe('the running run is shown with its own selection', () => {
+  it("lists the run's models and efforts (the dropdowns show defaults) and can load them", async () => {
+    const running = job({ run_name: 'v1', repetitions: 3, models: ['claude-opus-high', 'glm-low', 'glm-high'] })
+    const client = fakeClient({}, running)
+    render(<PlanPage client={client} />)
+    const panel = await screen.findByRole('region', { name: 'Run' })
+    await userEvent.click(within(panel).getByText(/Models in this run \(3\)/))
+    expect(within(panel).getByText('claude-opus', { exact: false }).closest('li')).toHaveTextContent('claude-opus: high')
+    expect(within(panel).getByText('glm', { exact: false, selector: 'strong' }).closest('li')).toHaveTextContent('glm: low, high')
+
+    // the dropdowns start at the config defaults (claude-opus: medium), not the running selection
+    expect(screen.getByLabelText(/claude-opus efforts: medium/)).toBeInTheDocument()
+    await userEvent.click(within(panel).getByRole('button', { name: 'Load this selection into the dropdowns' }))
+    expect(screen.getByLabelText(/claude-opus efforts: high/)).toBeInTheDocument()
+    expect(screen.getByLabelText(/glm efforts: all \(2\)/)).toBeInTheDocument()
+    expect(screen.getByRole('spinbutton', { name: /Repetitions/ })).toHaveValue(3)
+  })
+})
